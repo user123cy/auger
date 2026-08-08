@@ -2,8 +2,11 @@
 name = "auger"
 version = "0.1.0"
 edition = "2024"
-description = "Load test, discover and inspect HTTP endpoints"
+description = "Load test, discover and inspect HTTP endpoints from the terminal"
 license = "MIT"
+repository = "https://github.com/user123cy/auger"
+keywords = ["load-testing", "http", "cli", "benchmark", "security"]
+categories = ["command-line-utilities", "development-tools::testing"]
 
 [dependencies]
 anyhow = "1"
