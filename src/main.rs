@@ -14,15 +14,21 @@ use clap::Parser;
 
 fn main() -> anyhow::Result<()> {
     let cli = cli::Cli::parse();
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
     rt.block_on(run(cli))
 }
 
 async fn run(cli: cli::Cli) -> anyhow::Result<()> {
     match cli.command {
         cli::Commands::Run(args) => {
-            let report = runner::run(&args).await?;
-            report::print(&report);
+            let report = runner::run(&args, cli.json || args.quiet).await?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                report::print(&report);
+            }
             if let Some(path) = &args.save {
                 std::fs::write(path, serde_json::to_string_pretty(&report)?)?;
                 println!("\n  saved baseline to {}", path);
@@ -35,11 +41,19 @@ async fn run(cli: cli::Cli) -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
-        cli::Commands::Scan(args) => scan::run(&args).await?,
-        cli::Commands::Check(args) => check::run(&args).await?,
-        cli::Commands::Report { json, csv } => {
+        cli::Commands::Scan(args) => scan::run(&args, cli.json).await?,
+        cli::Commands::Check(args) => check::run(&args, cli.json).await?,
+        cli::Commands::Report {
+            json,
+            csv,
+            markdown,
+        } => {
             let report = load(&json)?;
-            report::print(&report);
+            if markdown {
+                report::print_markdown(&report);
+            } else {
+                report::print(&report);
+            }
             if let Some(out) = csv {
                 report::write_csv(&report, &out)?;
                 println!("  wrote {}", out);

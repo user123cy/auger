@@ -4,10 +4,18 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "auger", version, about = "Load test, discover and inspect HTTP endpoints")]
+#[command(
+    name = "auger",
+    version,
+    about = "Load test, discover and inspect HTTP endpoints"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
+
+    /// Emit machine-readable JSON to stdout instead of the table
+    #[arg(global = true, long, id = "json_out")]
+    pub json: bool,
 }
 
 #[derive(Subcommand)]
@@ -24,6 +32,9 @@ pub enum Commands {
         /// Also write latencies as CSV
         #[arg(long)]
         csv: Option<String>,
+        /// Print the report as a markdown table
+        #[arg(long)]
+        markdown: bool,
     },
     /// Export a saved report to a self-contained HTML file
     Html {
@@ -117,6 +128,14 @@ pub struct RunArgs {
     #[arg(long)]
     pub body_file: Option<String>,
 
+    /// Send this string as the request body (for POST/PUT)
+    #[arg(long)]
+    pub body: Option<String>,
+
+    /// Suppress the per-second progress line
+    #[arg(long)]
+    pub quiet: bool,
+
     #[command(flatten)]
     pub http: HttpOptions,
 }
@@ -150,6 +169,10 @@ pub struct ScanArgs {
     /// Delay in ms between requests per worker
     #[arg(long, default_value_t = 0)]
     pub delay: u64,
+
+    /// Also probe paths found in robots.txt and sitemap.xml
+    #[arg(short = 'R', long)]
+    pub robots: bool,
 
     #[command(flatten)]
     pub http: HttpOptions,
