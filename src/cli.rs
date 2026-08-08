@@ -19,7 +19,12 @@ pub enum Commands {
     /// Inspect a URL: status, HTTP version and security headers
     Check(CheckArgs),
     /// Print a saved report
-    Report { json: String },
+    Report {
+        json: String,
+        /// Also write latencies as CSV
+        #[arg(long)]
+        csv: Option<String>,
+    },
     /// Export a saved report to a self-contained HTML file
     Html {
         json: String,
@@ -48,6 +53,14 @@ pub struct HttpOptions {
     /// Request header, repeatable: -H "X-Token: abc"
     #[arg(short = 'H', long = "header")]
     pub headers: Vec<String>,
+
+    /// Use HTTP/2 only
+    #[arg(long)]
+    pub http2: bool,
+
+    /// Disable connection keep-alive
+    #[arg(long)]
+    pub no_keepalive: bool,
 }
 
 #[derive(clap::Args)]
@@ -88,6 +101,22 @@ pub struct RunArgs {
     #[arg(long)]
     pub token: Option<String>,
 
+    /// Run a fixed number of requests instead of by time
+    #[arg(short = 'n', long)]
+    pub requests: Option<u64>,
+
+    /// Ramp up concurrency over this duration, e.g. 30s
+    #[arg(long)]
+    pub ramp: Option<String>,
+
+    /// Cap total requests per second
+    #[arg(long)]
+    pub rps: Option<u64>,
+
+    /// Read the request body from a file
+    #[arg(long)]
+    pub body_file: Option<String>,
+
     #[command(flatten)]
     pub http: HttpOptions,
 }
@@ -110,6 +139,18 @@ pub struct ScanArgs {
     #[arg(short, long)]
     pub output: Option<String>,
 
+    /// Show the <title> of 2xx pages
+    #[arg(long)]
+    pub title: bool,
+
+    /// Only show these status codes, comma separated
+    #[arg(long)]
+    pub match_status: Option<String>,
+
+    /// Delay in ms between requests per worker
+    #[arg(long, default_value_t = 0)]
+    pub delay: u64,
+
     #[command(flatten)]
     pub http: HttpOptions,
 }
@@ -117,6 +158,10 @@ pub struct ScanArgs {
 #[derive(clap::Args)]
 pub struct CheckArgs {
     pub url: String,
+
+    /// Read URLs from a file, one per line
+    #[arg(short = 'f', long)]
+    pub file: Option<String>,
 
     #[command(flatten)]
     pub http: HttpOptions,

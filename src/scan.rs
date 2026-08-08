@@ -1,6 +1,7 @@
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use colored::Colorize;
@@ -14,6 +15,7 @@ struct Found {
     status: u16,
     size: u64,
     ms: f64,
+    title: Option<String>,
 }
 
 pub async fn run(args: &ScanArgs) -> anyhow::Result<()> {
@@ -21,85 +23,179 @@ pub async fn run(args: &ScanArgs) -> anyhow::Result<()> {
     if words.is_empty() {
         anyhow::bail!("wordlist '{}' has no entries", args.wordlist);
     }
-
     let words = Arc::new(words);
-    let next = Arc::new(AtomicUsize::new(0));
     let workers = args.concurrency.max(1);
+    let delay = Duration::from_millis(args.delay);
     let start = Instant::now();
 
+    let allow: Option<Vec<u16>> = match &args.match_status {
+        Some(spec) => {
+            let list: Result<Vec<u16>, _> = spec.split(',').map(|p| p.trim().parse()).collect();
+            Some(list.map_err(|_| {
+                anyhow::anyhow!("--match-status must be comma separated status codes, e.g. 200,301,403")
+            })?)
+        }
+        None => None,
+    };
+
+    // Fail fast on bad proxy, headers or auth before any traffic is sent.
     ClientConfig::from_http(&args.http).build()?;
 
-    let mut handles = Vec::new();
-    for i in 0..workers {
-        let words = words.clone();
-        let next = next.clone();
-        let base = args.url.clone();
-        let config = ClientConfig::from_http(&args.http).worker(i as usize).without_redirects();
-        handles.push(tokio::spawn(async move {
-            let client = config.build()?;
-            let mut found = Vec::new();
-            loop {
-                let idx = next.fetch_add(1, Ordering::Relaxed);
-                if idx >= words.len() {
-                    break;
-                }
-                let target = join(&base, &words[idx]);
-                let t0 = Instant::now();
-                match client.get(&target).send().await {
-                    Ok(resp) => found.push(Found {
-                        url: target,
-                        status: resp.status().as_u16(),
-                        size: resp.content_length().unwrap_or(0),
-                        ms: t0.elapsed().as_secs_f64() * 1000.0,
-                    }),
-                    Err(_) => {}
+    let config = ClientConfig::from_http(&args.http);
+    let mut tried = 0u64;
+    let (mut found, t) = probe(&args.url, &words, &config, workers, delay, args.title).await;
+    tried += t;
+
+    // Recurse into directories returned by the first pass.
+    let mut seen = HashSet::new();
+    let mut dirs: Vec<String> = found
+        .iter()
+        .filter(|f| (200..300).contains(&f.status) && f.url.ends_with('/'))
+        .filter(|f| seen.insert(f.url.clone()))
+        .map(|f| f.url.clone())
+        .collect();
+    dirs.sort();
+
+    let mut depth = 0usize;
+    while !dirs.is_empty() && depth < 3 {
+        depth += 1;
+        let mut next = Vec::new();
+        for d in &dirs {
+            let (mut more, t) = probe(d, &words, &config, workers, delay, args.title).await;
+            tried += t;
+            for f in &more {
+                if (200..300).contains(&f.status) && f.url.ends_with('/') && seen.insert(f.url.clone()) {
+                    next.push(f.url.clone());
                 }
             }
-            Ok::<_, anyhow::Error>(found)
-        }));
+            found.append(&mut more);
+        }
+        next.sort();
+        dirs = next;
     }
 
-    let mut found = Vec::new();
-    for h in handles {
-        if let Ok(Ok(mut f)) = h.await {
-            found.append(&mut f);
-        }
-    }
     found.sort_by(|a, b| a.status.cmp(&b.status).then(a.url.cmp(&b.url)));
+    let shown: Vec<&Found> = match &allow {
+        Some(list) => found.iter().filter(|f| list.contains(&f.status)).collect(),
+        None => found.iter().filter(|f| f.status != 404).collect(),
+    };
 
     println!();
     println!("  {} {}", "auger scan".bold().cyan(), args.url);
-    for f in found.iter().filter(|f| f.status != 404) {
+    for f in &shown {
         println!("{}", row(f));
     }
-    let hits = found.iter().filter(|f| f.status != 404).count();
     println!();
     println!(
-        "  {} paths · {} found · {:.1}s",
-        group(words.len() as u64),
-        group(hits as u64),
+        "  {} paths tried · {} found · {:.1}s",
+        group(tried),
+        group(shown.len() as u64),
         start.elapsed().as_secs_f64()
     );
 
     if let Some(out) = args.output.as_deref() {
         let mut data = String::new();
-        for f in found.iter().filter(|f| f.status != 404) {
+        for f in &shown {
             data.push_str(&format!("{} {}\n", f.status, f.url));
         }
         std::fs::write(out, data)?;
-        println!("  wrote {} paths to {}", hits, out);
+        println!("  wrote {} paths to {}", shown.len(), out);
     }
     Ok(())
 }
 
+async fn probe(
+    base: &str,
+    words: &Arc<Vec<String>>,
+    config: &ClientConfig,
+    workers: u32,
+    delay: Duration,
+    with_title: bool,
+) -> (Vec<Found>, u64) {
+    let next = Arc::new(AtomicUsize::new(0));
+    let mut handles = Vec::new();
+    for i in 0..workers {
+        let words = words.clone();
+        let next = next.clone();
+        let base = base.to_string();
+        let config = config.clone().worker(i as usize);
+        handles.push(tokio::spawn(async move {
+            let client = match config.build() {
+                Ok(c) => c,
+                Err(_) => return (Vec::new(), 0u64),
+            };
+            let mut found = Vec::new();
+            let mut tried = 0u64;
+            loop {
+                let idx = next.fetch_add(1, Ordering::Relaxed);
+                if idx >= words.len() {
+                    break;
+                }
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+                tried += 1;
+                let target = join(&base, &words[idx]);
+                let t0 = Instant::now();
+                match client.get(&target).send().await {
+                    Ok(resp) => {
+                        let status = resp.status().as_u16();
+                        let size = resp.content_length().unwrap_or(0);
+                        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                        let title = if with_title && (200..300).contains(&status) {
+                            read_title(resp).await
+                        } else {
+                            None
+                        };
+                        found.push(Found { url: target, status, size, ms, title });
+                    }
+                    Err(_) => {}
+                }
+            }
+            (found, tried)
+        }));
+    }
+    let mut out = Vec::new();
+    let mut tried = 0u64;
+    for h in handles {
+        if let Ok((mut f, t)) = h.await {
+            out.append(&mut f);
+            tried += t;
+        }
+    }
+    (out, tried)
+}
+
+async fn read_title(resp: reqwest::Response) -> Option<String> {
+    let bytes = resp.bytes().await.ok()?;
+    extract_title(&bytes)
+}
+
+fn extract_title(bytes: &[u8]) -> Option<String> {
+    let s = String::from_utf8_lossy(bytes);
+    let lower = s.to_lowercase();
+    let start = lower.find("<title")?;
+    let start = lower[start..].find('>')? + start + 1;
+    let end = lower[start..].find("</title>")? + start;
+    let t = s[start..end].trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
 fn row(f: &Found) -> String {
-    let line = format!(
+    let mut line = format!(
         "  {:>3} {:>9} {:>8.0}ms  {}",
         f.status,
         size_str(f.size),
         f.ms,
         f.url
     );
+    if let Some(t) = &f.title {
+        line.push_str(&format!("  |  {}", t));
+    }
     match f.status {
         200..=299 => line.green().to_string(),
         300..=399 => line.cyan().to_string(),
@@ -209,6 +305,24 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("UTF-16"));
+    }
+
+    #[test]
+    fn title_extracted() {
+        assert_eq!(
+            super::extract_title(b"<html><head><title>Example Domain</title></head></html>"),
+            Some("Example Domain".to_string())
+        );
+    }
+
+    #[test]
+    fn title_missing() {
+        assert_eq!(super::extract_title(b"<h1>no title here</h1>"), None);
+    }
+
+    #[test]
+    fn title_empty() {
+        assert_eq!(super::extract_title(b"<title></title>"), None);
     }
 }
 

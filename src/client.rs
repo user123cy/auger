@@ -14,6 +14,7 @@ const UA_POOL: [&str; 6] = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0",
 ];
 
+#[derive(Clone)]
 pub struct ClientConfig {
     pub insecure: bool,
     pub proxy: Option<String>,
@@ -24,6 +25,8 @@ pub struct ClientConfig {
     pub token: Option<String>,
     pub random_ua: bool,
     pub follow_redirects: bool,
+    pub http2: bool,
+    pub keepalive: bool,
     worker: usize,
 }
 
@@ -39,6 +42,8 @@ impl ClientConfig {
             token: None,
             random_ua: false,
             follow_redirects: true,
+            http2: http.http2,
+            keepalive: !http.no_keepalive,
             worker: 0,
         }
     }
@@ -83,6 +88,12 @@ impl ClientConfig {
         }
         if !self.follow_redirects {
             builder = builder.redirect(reqwest::redirect::Policy::none());
+        }
+        if !self.keepalive {
+            builder = builder.pool_max_idle_per_host(0);
+        }
+        if self.http2 {
+            builder = builder.http2_prior_knowledge();
         }
         let mut headers = parse_headers(&self.headers)?;
         if let Some(basic) = &self.basic {

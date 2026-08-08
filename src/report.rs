@@ -8,11 +8,12 @@ pub fn print(report: &Report) {
     let stats = report.stats();
     print_summary(report, &stats);
     print_percentiles(&stats);
-    if stats.histogram.is_empty() {
-        return;
+    if !stats.histogram.is_empty() {
+        print_histogram(&stats);
+        print_flame(&stats);
     }
-    print_histogram(&stats);
-    print_flame(&stats);
+    print_ttfb(&report.ttfb_ms);
+    print_slowest(&report.slowest_ms);
 }
 
 fn print_summary(report: &Report, stats: &Stats) {
@@ -27,11 +28,72 @@ fn print_summary(report: &Report, stats: &Stats) {
         group(stats.rps.round() as u64)
     );
     let mut line = format!("  {} errors", group(report.errors));
+    let e = report.errors_timeout;
+    if e > 0 {
+        line.push_str(&format!(" · {} timeout", group(e)));
+    }
+    let e = report.errors_connect;
+    if e > 0 {
+        line.push_str(&format!(" · {} conn refused", group(e)));
+    }
+    let e = report.errors_tls;
+    if e > 0 {
+        line.push_str(&format!(" · {} tls", group(e)));
+    }
+    let e = report.errors_other;
+    if e > 0 {
+        line.push_str(&format!(" · {} other", group(e)));
+    }
     if report.bytes > 0 {
         line.push_str(&format!(" · {:.1} MB downloaded", report.bytes as f64 / 1_000_000.0));
     }
     println!("{}", line);
+
+    if !report.statuses.is_empty() {
+        let parts: Vec<String> = report
+            .statuses
+            .iter()
+            .map(|(k, v)| format!("{} x{}", k, group(*v)))
+            .collect();
+        println!("  status  {}", parts.join("  "));
+    }
     println!();
+}
+
+fn print_ttfb(ttfb: &[f64]) {
+    if ttfb.is_empty() {
+        return;
+    }
+    let mut s = ttfb.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let pct = |p: f64| s[((s.len() - 1) as f64 * p).round() as usize];
+    println!();
+    println!(
+        "  ttfb (ms)  p50 {} · p95 {} · max {}",
+        ms(pct(0.50)),
+        ms(pct(0.95)),
+        ms(*s.last().unwrap())
+    );
+}
+
+fn print_slowest(top: &[f64]) {
+    if top.is_empty() {
+        return;
+    }
+    println!();
+    println!("  slowest (ms)");
+    for (i, v) in top.iter().enumerate() {
+        println!("    {}  {}", i + 1, ms(*v));
+    }
+}
+
+pub fn write_csv(report: &Report, path: &str) -> anyhow::Result<()> {
+    let mut s = String::from("latency_ms\n");
+    for v in &report.latencies_ms {
+        s.push_str(&format!("{:.3}\n", v));
+    }
+    std::fs::write(path, s)?;
+    Ok(())
 }
 
 fn print_percentiles(stats: &Stats) {

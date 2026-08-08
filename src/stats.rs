@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -9,6 +11,20 @@ pub struct Report {
     pub errors: u64,
     pub bytes: u64,
     pub latencies_ms: Vec<f64>,
+    #[serde(default)]
+    pub errors_timeout: u64,
+    #[serde(default)]
+    pub errors_connect: u64,
+    #[serde(default)]
+    pub errors_tls: u64,
+    #[serde(default)]
+    pub errors_other: u64,
+    #[serde(default)]
+    pub statuses: BTreeMap<u16, u64>,
+    #[serde(default)]
+    pub ttfb_ms: Vec<f64>,
+    #[serde(default)]
+    pub slowest_ms: Vec<f64>,
 }
 
 #[derive(Debug)]

@@ -31,10 +31,20 @@ async fn run(cli: cli::Cli) -> anyhow::Result<()> {
                 let baseline = load(path)?;
                 compare::print(&baseline.stats(), &report.stats(), args.threshold);
             }
+            if report.errors > 0 {
+                std::process::exit(1);
+            }
         }
         cli::Commands::Scan(args) => scan::run(&args).await?,
         cli::Commands::Check(args) => check::run(&args).await?,
-        cli::Commands::Report { json } => report::print(&load(&json)?),
+        cli::Commands::Report { json, csv } => {
+            let report = load(&json)?;
+            report::print(&report);
+            if let Some(out) = csv {
+                report::write_csv(&report, &out)?;
+                println!("  wrote {}", out);
+            }
+        }
         cli::Commands::Html { json, out } => {
             html::export(&load(&json)?, &out)?;
             println!("  wrote {}", out);
