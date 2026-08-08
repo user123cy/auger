@@ -1,5 +1,7 @@
 # auger
 
+![crates.io](https://img.shields.io/crates/v/auger.svg)
+![downloads](https://img.shields.io/crates/d/auger.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![CI](https://github.com/user123cy/auger/actions/workflows/ci.yml/badge.svg)
 
@@ -9,13 +11,23 @@ Three commands, one binary:
 
 - `auger run` — hammer a URL with concurrent requests, get percentiles, a latency histogram and a flamegraph
 - `auger scan` — brute-force endpoints with a wordlist
-- `auger check` — inspect status, HTTP version and security headers
+- `auger check` — inspect status, HTTP version and security headers with an A-F grade
 
 ## install
 
+From crates.io:
+
 ```
-cargo install --path .
+cargo install auger
 ```
+
+Or the install script (downloads the latest prebuilt binary):
+
+```
+curl -fsSL https://raw.githubusercontent.com/user123cy/auger/main/scripts/install.sh | bash
+```
+
+Prebuilt binaries for Linux, macOS and Windows are attached to every [release](https://github.com/user123cy/auger/releases).
 
 ## load test
 
@@ -24,6 +36,9 @@ auger run https://api.example.com/                  # 20 workers, 5s
 auger run https://api.example.com/ -c 200 -d 30s    # 200 workers, 30s
 auger run https://api.example.com/ -m POST -d 10s
 auger run https://api.example.com/ --random-ua -H "X-Token: abc"
+auger run https://api.example.com/ -m POST --body '{"user":1}'   # inline request body
+auger run https://api.example.com/ -d 30s --quiet                # no progress line
+auger run https://api.example.com/ -d 30s --json                 # machine-readable output
 ```
 
 Save a baseline and compare against it later:
@@ -41,21 +56,25 @@ Any percentile slower than the baseline by more than the threshold flags a regre
 auger scan https://example.com/ -w wordlist.txt               # find non-404 paths
 auger scan https://example.com/ -w wordlist.txt -e php,html   # also try .php and .html
 auger scan https://example.com/ -w wordlist.txt -o hits.txt   # save status + url lines
+auger scan https://example.com/ -w wordlist.txt -R            # also probe robots.txt + sitemap.xml paths
+auger scan https://example.com/ -w wordlist.txt --json        # machine-readable output
 ```
 
 ## inspect
 
 ```
 auger check https://example.com/
+auger check https://example.com/ --json
 ```
 
-Shows status, HTTP version, server and which security headers are present: HSTS, CSP, clickjacking, mime sniffing, referrer, permissions, COOP, CORP.
+Shows status, HTTP version, server and which security headers are present: HSTS, CSP, clickjacking, mime sniffing, referrer, permissions, COOP, CORP. The headers are weighted and scored into a letter grade (A-F) in the style of securityheaders.com.
 
 ## reports
 
 ```
 auger run https://api.example.com/ -d 10s -s report.json
 auger report report.json            # print it again later
+auger report report.json --markdown # as a markdown table
 auger html report.json -o r.html    # self-contained HTML with a chart
 auger compare before.json after.json
 ```
