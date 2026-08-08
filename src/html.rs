@@ -72,7 +72,13 @@ fn chart(stats: &Stats) -> String {
     let width = 720.0;
     let height = 200.0;
     let pad = 16.0;
-    let max_count = stats.histogram.iter().map(|b| b.count).max().unwrap_or(1).max(1) as f64;
+    let max_count = stats
+        .histogram
+        .iter()
+        .map(|b| b.count)
+        .max()
+        .unwrap_or(1)
+        .max(1) as f64;
     let n = stats.histogram.len() as f64;
     let slot = width / n;
     let bw = (slot - 4.0).max(2.0);
@@ -111,5 +117,7 @@ fn chart(stats: &Stats) -> String {
 }
 
 fn escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }

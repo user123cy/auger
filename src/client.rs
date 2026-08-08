@@ -36,7 +36,10 @@ impl ClientConfig {
             insecure: http.insecure,
             proxy: http.proxy.clone(),
             timeout: http.timeout,
-            user_agent: http.user_agent.clone().unwrap_or_else(|| "auger/0.1".into()),
+            user_agent: http
+                .user_agent
+                .clone()
+                .unwrap_or_else(|| "auger/0.1".into()),
             headers: http.headers.clone(),
             basic: None,
             token: None,
@@ -82,8 +85,8 @@ impl ClientConfig {
             builder = builder.danger_accept_invalid_certs(true);
         }
         if let Some(proxy) = &self.proxy {
-            let parsed = reqwest::Proxy::all(proxy)
-                .with_context(|| format!("invalid proxy '{}'", proxy))?;
+            let parsed =
+                reqwest::Proxy::all(proxy).with_context(|| format!("invalid proxy '{}'", proxy))?;
             builder = builder.proxy(parsed);
         }
         if !self.follow_redirects {
@@ -100,11 +103,18 @@ impl ClientConfig {
             let (user, pass) = basic
                 .split_once(':')
                 .ok_or_else(|| anyhow::anyhow!("--basic must be in the form user:pass"))?;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
-            headers.insert(reqwest::header::AUTHORIZATION, format!("Basic {}", encoded).parse()?);
+            let encoded =
+                base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                format!("Basic {}", encoded).parse()?,
+            );
         }
         if let Some(token) = &self.token {
-            headers.insert(reqwest::header::AUTHORIZATION, format!("Bearer {}", token).parse()?);
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {}", token).parse()?,
+            );
         }
         builder = builder.default_headers(headers);
         Ok(builder.build()?)
