@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::error::Error;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::cli::RunArgs;
@@ -46,12 +46,20 @@ fn is_tls(e: &reqwest::Error) -> bool {
     false
 }
 
-pub async fn run(args: &RunArgs) -> anyhow::Result<Report> {
+pub async fn run(args: &RunArgs, quiet: bool) -> anyhow::Result<Report> {
     let method: reqwest::Method = args.method.parse()?;
     let duration = crate::cli::parse_duration(&args.duration)?;
     let workers = args.concurrency.max(1);
-    let body = args.body_file.as_deref().map(std::fs::read).transpose()?;
-    let ramp = args.ramp.as_deref().map(crate::cli::parse_duration).transpose()?;
+    let body = match (&args.body_file, &args.body) {
+        (_, Some(b)) => Some(b.as_bytes().to_vec()),
+        (Some(f), None) => Some(std::fs::read(f)?),
+        (None, None) => None,
+    };
+    let ramp = args
+        .ramp
+        .as_deref()
+        .map(crate::cli::parse_duration)
+        .transpose()?;
     let limit = args.requests;
     let per_worker = args
         .rps
@@ -68,20 +76,24 @@ pub async fn run(args: &RunArgs) -> anyhow::Result<Report> {
 
     let done = Arc::new(AtomicU64::new(0));
     let fail = Arc::new(AtomicU64::new(0));
-    let done_p = done.clone();
-    let fail_p = fail.clone();
-    let progress = tokio::spawn(async move {
-        let mut iv = tokio::time::interval(Duration::from_secs(1));
-        iv.tick().await;
-        loop {
+    let progress = if quiet {
+        None
+    } else {
+        let done_p = done.clone();
+        let fail_p = fail.clone();
+        Some(tokio::spawn(async move {
+            let mut iv = tokio::time::interval(Duration::from_secs(1));
             iv.tick().await;
-            eprint!(
-                "\r\x1b[2K  {} req · {} errors",
-                done_p.load(Ordering::Relaxed),
-                fail_p.load(Ordering::Relaxed)
-            );
-        }
-    });
+            loop {
+                iv.tick().await;
+                eprint!(
+                    "\r\x1b[2K  {} req · {} errors",
+                    done_p.load(Ordering::Relaxed),
+                    fail_p.load(Ordering::Relaxed)
+                );
+            }
+        }))
+    };
 
     let mut handles = Vec::new();
     for i in 0..workers {
@@ -94,7 +106,7 @@ pub async fn run(args: &RunArgs) -> anyhow::Result<Report> {
             .with_basic(args.basic.clone())
             .with_token(args.token.clone());
         let ramp_delay = match ramp {
-            Some(r) => Duration::from_micros((r.as_micros() as u128 * i as u128 / workers as u128) as u64),
+            Some(r) => Duration::from_micros((r.as_micros() * i as u128 / workers as u128) as u64),
             None => Duration::ZERO,
         };
         let done = done.clone();
@@ -111,10 +123,10 @@ pub async fn run(args: &RunArgs) -> anyhow::Result<Report> {
             let mut bytes = 0u64;
             let mut slowest = Vec::new();
             while Instant::now() < deadline {
-                if let Some(limit) = limit {
-                    if done.load(Ordering::Relaxed) + fail.load(Ordering::Relaxed) >= limit {
-                        break;
-                    }
+                if let Some(limit) = limit
+                    && done.load(Ordering::Relaxed) + fail.load(Ordering::Relaxed) >= limit
+                {
+                    break;
                 }
                 let t0 = Instant::now();
                 let mut req = client.request(method.clone(), &url);
@@ -136,7 +148,8 @@ pub async fn run(args: &RunArgs) -> anyhow::Result<Report> {
                         ttfb_ms.push(ttfb);
                         samples.push(total);
                         slowest.push(total);
-                        slowest.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+                        slowest
+                            .sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
                         slowest.truncate(5);
                         done.fetch_add(1, Ordering::Relaxed);
                     }
@@ -179,8 +192,12 @@ pub async fn run(args: &RunArgs) -> anyhow::Result<Report> {
     }
     slowest.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
     slowest.truncate(5);
-    progress.abort();
-    eprintln!();
+    if let Some(p) = progress {
+        p.abort();
+    }
+    if !quiet {
+        eprintln!();
+    }
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
     let total_errors = total_timeout + total_connect + total_tls + total_other;

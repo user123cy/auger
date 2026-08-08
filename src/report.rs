@@ -1,8 +1,30 @@
 use colored::Colorize;
 
 use crate::color::heat;
-use crate::fmt::{group, ms};
+use crate::fmt::{dec1, group, ms, whole};
 use crate::stats::{Report, Stats};
+
+pub fn print_markdown(report: &Report) {
+    let stats = report.stats();
+    println!("# auger — {}", report.url);
+    println!();
+    println!("| metric | value |");
+    println!("|---|---|");
+    println!("| requests | {} |", group(report.requests));
+    println!("| req/s | {} |", whole(stats.rps));
+    println!("| errors | {} |", group(report.errors));
+    println!(
+        "| duration | {} s |",
+        dec1(report.elapsed_ms as f64 / 1000.0)
+    );
+    println!("| mean | {} ms |", dec1(stats.mean_ms));
+    println!("| p50 | {} ms |", dec1(stats.p50));
+    println!("| p75 | {} ms |", dec1(stats.p75));
+    println!("| p90 | {} ms |", dec1(stats.p90));
+    println!("| p95 | {} ms |", dec1(stats.p95));
+    println!("| p99 | {} ms |", dec1(stats.p99));
+    println!("| max | {} ms |", dec1(stats.max_ms));
+}
 
 pub fn print(report: &Report) {
     let stats = report.stats();
@@ -45,7 +67,10 @@ fn print_summary(report: &Report, stats: &Stats) {
         line.push_str(&format!(" · {} other", group(e)));
     }
     if report.bytes > 0 {
-        line.push_str(&format!(" · {:.1} MB downloaded", report.bytes as f64 / 1_000_000.0));
+        line.push_str(&format!(
+            " · {:.1} MB downloaded",
+            report.bytes as f64 / 1_000_000.0
+        ));
     }
     println!("{}", line);
 
@@ -114,7 +139,13 @@ fn print_percentiles(stats: &Stats) {
 }
 
 fn print_histogram(stats: &Stats) {
-    let max_count = stats.histogram.iter().map(|b| b.count).max().unwrap_or(1).max(1) as f64;
+    let max_count = stats
+        .histogram
+        .iter()
+        .map(|b| b.count)
+        .max()
+        .unwrap_or(1)
+        .max(1) as f64;
     println!();
     println!("  latency histogram (ms)");
     for b in &stats.histogram {
@@ -122,7 +153,12 @@ fn print_histogram(stats: &Stats) {
         let bar = "█".repeat(bar_len.max(1));
         let label = format!("{:.1}–{:.1}", b.lo, b.hi);
         let (r, g, bl) = heat((b.hi / stats.max_ms.max(1.0)).clamp(0.0, 1.0));
-        println!("  {:>10} {} {}", label, bar.truecolor(r, g, bl), group(b.count));
+        println!(
+            "  {:>10} {} {}",
+            label,
+            bar.truecolor(r, g, bl),
+            group(b.count)
+        );
     }
 }
 
@@ -130,7 +166,13 @@ fn print_flame(stats: &Stats) {
     println!();
     println!("  latency flamegraph");
     let height = 8u32;
-    let max_count = stats.histogram.iter().map(|b| b.count).max().unwrap_or(1).max(1) as f64;
+    let max_count = stats
+        .histogram
+        .iter()
+        .map(|b| b.count)
+        .max()
+        .unwrap_or(1)
+        .max(1) as f64;
     for row in (0..height).rev() {
         let mut line = String::from("   ");
         for b in &stats.histogram {
