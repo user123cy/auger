@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use anyhow::Context;
 use colored::Colorize;
 
 use crate::cli::ScanArgs;
@@ -120,13 +121,95 @@ fn size_str(b: u64) -> String {
 }
 
 fn load_words(path: &str) -> anyhow::Result<Vec<String>> {
-    let text = std::fs::read_to_string(path)?;
+    let bytes = std::fs::read(path).with_context(|| format!("failed to read wordlist '{}'", path))?;
+    let text = decode_wordlist(&bytes, path)?;
     Ok(text
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .map(String::from)
         .collect())
+}
+
+fn decode_wordlist(bytes: &[u8], path: &str) -> anyhow::Result<String> {
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16(&units)
+            .map_err(|_| anyhow::anyhow!("wordlist '{}' has invalid UTF-16 LE data", path));
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16(&units)
+            .map_err(|_| anyhow::anyhow!("wordlist '{}' has invalid UTF-16 BE data", path));
+    }
+    let text = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        &bytes[3..]
+    } else {
+        bytes
+    };
+    match std::str::from_utf8(text) {
+        Ok(s) => Ok(s.to_string()),
+        Err(_) => Err(anyhow::anyhow!(
+            "wordlist '{}' is not valid UTF-8 — if created with PowerShell, re-save it as UTF-8: `Get-Content {} | Set-Content {} -Encoding utf8`",
+            path, path, path
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_wordlist;
+
+    #[test]
+    fn plain_utf8() {
+        assert_eq!(decode_wordlist(b"admin\nprivate\n", "w").unwrap(), "admin\nprivate\n");
+    }
+
+    #[test]
+    fn utf8_with_bom() {
+        assert_eq!(decode_wordlist(b"\xef\xbb\xbfadmin", "w").unwrap(), "admin");
+    }
+
+    #[test]
+    fn utf16_le_with_bom() {
+        let text = "admin\r\nprivate";
+        let mut b = vec![0xFF, 0xFE];
+        for u in text.encode_utf16() {
+            b.extend_from_slice(&u.to_le_bytes());
+        }
+        assert_eq!(decode_wordlist(&b, "w").unwrap(), text);
+    }
+
+    #[test]
+    fn utf16_be_with_bom() {
+        let text = "admin\nprivate";
+        let mut b = vec![0xFE, 0xFF];
+        for u in text.encode_utf16() {
+            b.extend_from_slice(&u.to_be_bytes());
+        }
+        assert_eq!(decode_wordlist(&b, "w").unwrap(), text);
+    }
+
+    #[test]
+    fn invalid_utf8_mentions_file() {
+        let err = decode_wordlist(&[0x61, 0xC3], "words.txt").unwrap_err().to_string();
+        assert!(err.contains("words.txt"));
+        assert!(err.contains("not valid UTF-8"));
+    }
+
+    #[test]
+    fn invalid_utf16_le_data() {
+        let err = decode_wordlist(&[0xFF, 0xFE, 0x00, 0xD8], "words.txt")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("UTF-16"));
+    }
 }
 
 fn expand(words: Vec<String>, extensions: Option<&str>) -> Vec<String> {
