@@ -1,15 +1,17 @@
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use colored::Colorize;
+use serde::Serialize;
 
 use crate::cli::ScanArgs;
 use crate::client::ClientConfig;
 use crate::fmt::group;
 
+#[derive(Serialize)]
 struct Found {
     url: String,
     status: u16,
@@ -18,10 +20,29 @@ struct Found {
     title: Option<String>,
 }
 
-pub async fn run(args: &ScanArgs) -> anyhow::Result<()> {
-    let words = expand(load_words(&args.wordlist)?, args.extensions.as_deref());
+pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
+    let mut words = expand(load_words(&args.wordlist)?, args.extensions.as_deref());
     if words.is_empty() {
         anyhow::bail!("wordlist '{}' has no entries", args.wordlist);
+    }
+
+    // Fail fast on bad proxy, headers or auth before any traffic is sent.
+    ClientConfig::from_http(&args.http).build()?;
+
+    let config = ClientConfig::from_http(&args.http);
+    let mut extra = 0usize;
+    if args.robots {
+        let found = robots_paths(&args.url, &config).await;
+        let mut seen: HashSet<String> = words.iter().cloned().collect();
+        for p in found {
+            if seen.insert(p.clone()) {
+                words.push(p);
+                extra += 1;
+            }
+        }
+    }
+    if extra > 0 && !json {
+        println!("  {} paths from robots/sitemap", extra);
     }
     let words = Arc::new(words);
     let workers = args.concurrency.max(1);
@@ -32,16 +53,14 @@ pub async fn run(args: &ScanArgs) -> anyhow::Result<()> {
         Some(spec) => {
             let list: Result<Vec<u16>, _> = spec.split(',').map(|p| p.trim().parse()).collect();
             Some(list.map_err(|_| {
-                anyhow::anyhow!("--match-status must be comma separated status codes, e.g. 200,301,403")
+                anyhow::anyhow!(
+                    "--match-status must be comma separated status codes, e.g. 200,301,403"
+                )
             })?)
         }
         None => None,
     };
 
-    // Fail fast on bad proxy, headers or auth before any traffic is sent.
-    ClientConfig::from_http(&args.http).build()?;
-
-    let config = ClientConfig::from_http(&args.http);
     let mut tried = 0u64;
     let (mut found, t) = probe(&args.url, &words, &config, workers, delay, args.title).await;
     tried += t;
@@ -64,7 +83,10 @@ pub async fn run(args: &ScanArgs) -> anyhow::Result<()> {
             let (mut more, t) = probe(d, &words, &config, workers, delay, args.title).await;
             tried += t;
             for f in &more {
-                if (200..300).contains(&f.status) && f.url.ends_with('/') && seen.insert(f.url.clone()) {
+                if (200..300).contains(&f.status)
+                    && f.url.ends_with('/')
+                    && seen.insert(f.url.clone())
+                {
                     next.push(f.url.clone());
                 }
             }
@@ -80,6 +102,29 @@ pub async fn run(args: &ScanArgs) -> anyhow::Result<()> {
         None => found.iter().filter(|f| f.status != 404).collect(),
     };
 
+    if let Some(out) = args.output.as_deref() {
+        let mut data = String::new();
+        for f in &shown {
+            data.push_str(&format!("{} {}\n", f.status, f.url));
+        }
+        std::fs::write(out, data)?;
+        if !json {
+            println!("  wrote {} paths to {}", shown.len(), out);
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "tried": tried,
+                "found": shown.len(),
+                "paths": shown,
+            }))?
+        );
+        return Ok(());
+    }
+
     println!();
     println!("  {} {}", "auger scan".bold().cyan(), args.url);
     for f in &shown {
@@ -92,15 +137,6 @@ pub async fn run(args: &ScanArgs) -> anyhow::Result<()> {
         group(shown.len() as u64),
         start.elapsed().as_secs_f64()
     );
-
-    if let Some(out) = args.output.as_deref() {
-        let mut data = String::new();
-        for f in &shown {
-            data.push_str(&format!("{} {}\n", f.status, f.url));
-        }
-        std::fs::write(out, data)?;
-        println!("  wrote {} paths to {}", shown.len(), out);
-    }
     Ok(())
 }
 
@@ -137,19 +173,22 @@ async fn probe(
                 tried += 1;
                 let target = join(&base, &words[idx]);
                 let t0 = Instant::now();
-                match client.get(&target).send().await {
-                    Ok(resp) => {
-                        let status = resp.status().as_u16();
-                        let size = resp.content_length().unwrap_or(0);
-                        let ms = t0.elapsed().as_secs_f64() * 1000.0;
-                        let title = if with_title && (200..300).contains(&status) {
-                            read_title(resp).await
-                        } else {
-                            None
-                        };
-                        found.push(Found { url: target, status, size, ms, title });
-                    }
-                    Err(_) => {}
+                if let Ok(resp) = client.get(&target).send().await {
+                    let status = resp.status().as_u16();
+                    let size = resp.content_length().unwrap_or(0);
+                    let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                    let title = if with_title && (200..300).contains(&status) {
+                        read_title(resp).await
+                    } else {
+                        None
+                    };
+                    found.push(Found {
+                        url: target,
+                        status,
+                        size,
+                        ms,
+                        title,
+                    });
                 }
             }
             (found, tried)
@@ -217,7 +256,8 @@ fn size_str(b: u64) -> String {
 }
 
 fn load_words(path: &str) -> anyhow::Result<Vec<String>> {
-    let bytes = std::fs::read(path).with_context(|| format!("failed to read wordlist '{}'", path))?;
+    let bytes =
+        std::fs::read(path).with_context(|| format!("failed to read wordlist '{}'", path))?;
     let text = decode_wordlist(&bytes, path)?;
     Ok(text
         .lines()
@@ -253,7 +293,9 @@ fn decode_wordlist(bytes: &[u8], path: &str) -> anyhow::Result<String> {
         Ok(s) => Ok(s.to_string()),
         Err(_) => Err(anyhow::anyhow!(
             "wordlist '{}' is not valid UTF-8 — if created with PowerShell, re-save it as UTF-8: `Get-Content {} | Set-Content {} -Encoding utf8`",
-            path, path, path
+            path,
+            path,
+            path
         )),
     }
 }
@@ -264,7 +306,10 @@ mod tests {
 
     #[test]
     fn plain_utf8() {
-        assert_eq!(decode_wordlist(b"admin\nprivate\n", "w").unwrap(), "admin\nprivate\n");
+        assert_eq!(
+            decode_wordlist(b"admin\nprivate\n", "w").unwrap(),
+            "admin\nprivate\n"
+        );
     }
 
     #[test]
@@ -294,7 +339,9 @@ mod tests {
 
     #[test]
     fn invalid_utf8_mentions_file() {
-        let err = decode_wordlist(&[0x61, 0xC3], "words.txt").unwrap_err().to_string();
+        let err = decode_wordlist(&[0x61, 0xC3], "words.txt")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("words.txt"));
         assert!(err.contains("not valid UTF-8"));
     }
@@ -356,4 +403,115 @@ fn join(base: &str, path: &str) -> String {
         base.trim_end_matches('/'),
         path.trim_start_matches('/')
     )
+}
+
+async fn robots_paths(base: &str, config: &ClientConfig) -> Vec<String> {
+    let mut out = Vec::new();
+    let client = match config.build() {
+        Ok(c) => c,
+        Err(_) => return out,
+    };
+
+    if let Ok(resp) = client.get(join(base, "robots.txt")).send().await
+        && resp.status().is_success()
+        && let Ok(text) = resp.text().await
+    {
+        for line in text.lines() {
+            let lower = line.to_lowercase();
+            if lower.starts_with("allow:") || lower.starts_with("disallow:") {
+                let value = line.split_once(':').map(|(_, v)| v.trim()).unwrap_or("");
+                if let Some(p) = clean_path(value) {
+                    out.push(p);
+                }
+            }
+        }
+    }
+
+    if let Ok(resp) = client.get(join(base, "sitemap.xml")).send().await
+        && resp.status().is_success()
+        && let Ok(text) = resp.text().await
+    {
+        for loc in extract_locs(&text) {
+            let p = path_of(&loc);
+            if p.len() > 1 {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+fn clean_path(raw: &str) -> Option<String> {
+    let p = raw
+        .replace('*', "")
+        .trim_end_matches('$')
+        .trim()
+        .to_string();
+    if p.len() <= 1 || !p.starts_with('/') {
+        return None;
+    }
+    Some(p)
+}
+
+fn extract_locs(xml: &str) -> Vec<String> {
+    let lower = xml.to_lowercase();
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    while let Some(rel) = lower[pos..].find("<loc>") {
+        let start = pos + rel + 5;
+        let Some(end) = lower[start..].find("</loc>") else {
+            break;
+        };
+        let loc = xml[start..start + end].trim();
+        if !loc.is_empty() {
+            out.push(loc.to_string());
+        }
+        pos = start + end + 6;
+    }
+    out
+}
+
+fn path_of(url: &str) -> String {
+    let rest = url.split("://").nth(1).unwrap_or(url);
+    let path = rest.split_once('/').map(|(_, p)| p).unwrap_or("");
+    if path.is_empty() {
+        "/".into()
+    } else {
+        format!("/{}", path)
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::{clean_path, extract_locs, path_of};
+
+    #[test]
+    fn clean_path_strips_wildcards() {
+        assert_eq!(clean_path("/admin/*"), Some("/admin/".to_string()));
+        assert_eq!(clean_path("/private$"), Some("/private".to_string()));
+        assert_eq!(clean_path("admin"), None);
+        assert_eq!(clean_path("/"), None);
+    }
+
+    #[test]
+    fn extract_locs_parses_sitemap() {
+        let xml = "<urlset><url><loc>https://a.com/one</loc></url>\
+                   <url><loc>https://a.com/two</loc></url></urlset>";
+        assert_eq!(
+            extract_locs(xml),
+            vec!["https://a.com/one", "https://a.com/two"]
+        );
+    }
+
+    #[test]
+    fn extract_locs_empty() {
+        assert_eq!(extract_locs("<urlset></urlset>"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn path_of_extracts_path() {
+        assert_eq!(path_of("https://a.com/x/y?z=1"), "/x/y?z=1");
+        assert_eq!(path_of("https://a.com/"), "/");
+        assert_eq!(path_of("/foo"), "/foo");
+    }
 }
