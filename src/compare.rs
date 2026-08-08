@@ -154,7 +154,6 @@ mod tests {
     fn threshold_below_one_is_clamped() {
         let rows = diff(&mk(10.0, 10.0, 0.0), &mk(12.0, 12.0, 0.0), 0.5);
         let mean = rows.iter().find(|r| r.label == "mean").unwrap();
-        // t is clamped to 1.0, so 12 > 10 flags a regression
         assert!(mean.regression);
     }
 }

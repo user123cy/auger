@@ -26,13 +26,11 @@ pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
         anyhow::bail!("wordlist '{}' has no entries", args.wordlist);
     }
 
-    // Fail fast on bad proxy, headers or auth before any traffic is sent.
-    ClientConfig::from_http(&args.http).build()?;
-
     let config = ClientConfig::from_http(&args.http);
+    let client = config.build()?;
     let mut extra = 0usize;
     if args.robots {
-        let found = robots_paths(&args.url, &config).await;
+        let found = robots_paths(&args.url, &client).await;
         let mut seen: HashSet<String> = words.iter().cloned().collect();
         for p in found {
             if seen.insert(p.clone()) {
@@ -65,7 +63,6 @@ pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
     let (mut found, t) = probe(&args.url, &words, &config, workers, delay, args.title).await;
     tried += t;
 
-    // Recurse into directories returned by the first pass.
     let mut seen = HashSet::new();
     let mut dirs: Vec<String> = found
         .iter()
@@ -405,12 +402,8 @@ fn join(base: &str, path: &str) -> String {
     )
 }
 
-async fn robots_paths(base: &str, config: &ClientConfig) -> Vec<String> {
+async fn robots_paths(base: &str, client: &reqwest::Client) -> Vec<String> {
     let mut out = Vec::new();
-    let client = match config.build() {
-        Ok(c) => c,
-        Err(_) => return out,
-    };
 
     if let Ok(resp) = client.get(join(base, "robots.txt")).send().await
         && resp.status().is_success()
