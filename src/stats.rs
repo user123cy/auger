@@ -113,9 +113,90 @@ fn histogram(sorted: &[f64], max: f64) -> Vec<Bucket> {
     for (i, &hi) in edges.iter().enumerate() {
         if counts[i] > 0 {
             let hi = if hi.is_infinite() { max } else { hi };
-            out.push(Bucket { lo, hi, count: counts[i] });
+            out.push(Bucket {
+                lo,
+                hi,
+                count: counts[i],
+            });
         }
         lo = hi;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report(latencies: Vec<f64>) -> Report {
+        Report {
+            url: "http://test".into(),
+            concurrency: 1,
+            elapsed_ms: 1000,
+            requests: latencies.len() as u64,
+            errors: 0,
+            bytes: 0,
+            latencies_ms: latencies,
+            ttfb_ms: vec![],
+            statuses: Default::default(),
+            errors_timeout: 0,
+            errors_connect: 0,
+            errors_tls: 0,
+            errors_other: 0,
+            slowest_ms: vec![],
+        }
+    }
+
+    #[test]
+    fn percentiles_on_known_data() {
+        let s = report(vec![10.0, 20.0, 30.0, 40.0, 50.0]).stats();
+        assert_eq!(s.p50, 30.0);
+        assert_eq!(s.p75, 40.0);
+        assert_eq!(s.p90, 50.0);
+        assert_eq!(s.p95, 50.0);
+        assert_eq!(s.p99, 50.0);
+        assert_eq!(s.max_ms, 50.0);
+        assert_eq!(s.mean_ms, 30.0);
+    }
+
+    #[test]
+    fn single_sample() {
+        let s = report(vec![42.0]).stats();
+        assert_eq!(s.p50, 42.0);
+        assert_eq!(s.max_ms, 42.0);
+        assert_eq!(s.mean_ms, 42.0);
+    }
+
+    #[test]
+    fn empty_report_zero_stats() {
+        let s = report(vec![]).stats();
+        assert_eq!(s.p50, 0.0);
+        assert_eq!(s.mean_ms, 0.0);
+        assert_eq!(s.max_ms, 0.0);
+        assert!(s.histogram.is_empty());
+    }
+
+    #[test]
+    fn rps_uses_elapsed_ms() {
+        let r = report(vec![1.0, 2.0]);
+        assert_eq!(r.stats().rps, 2.0);
+    }
+
+    #[test]
+    fn histogram_keeps_every_sample() {
+        let s = report(vec![1.0, 2.0, 3.0]).stats();
+        let total: u64 = s.histogram.iter().map(|b| b.count).sum();
+        assert_eq!(total, 3);
+        assert!(s.histogram.iter().all(|b| b.lo < b.hi));
+    }
+
+    #[test]
+    fn report_round_trip() {
+        let r = report(vec![1.5, 2.5, 3.5]);
+        let json = serde_json::to_string(&r).unwrap();
+        let back: Report = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.url, r.url);
+        assert_eq!(back.requests, r.requests);
+        assert_eq!(back.latencies_ms, r.latencies_ms);
+    }
 }
