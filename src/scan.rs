@@ -65,34 +65,17 @@ pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
     };
 
     let mut tried = 0u64;
-    let (mut found, t) = probe(&args.url, &words, &config, workers, delay, args.title).await;
+    let (mut found, t) = scan_base(
+        &args.url,
+        &words,
+        &config,
+        workers,
+        delay,
+        args.title,
+        effective_depth,
+    )
+    .await;
     tried += t;
-
-    let mut seen = HashSet::new();
-    let mut dirs: Vec<String> = found
-        .iter()
-        .filter(|f| is_dir(f, &mut seen))
-        .map(|f| f.url.clone())
-        .collect();
-    dirs.sort();
-
-    let mut depth = 0usize;
-    while !dirs.is_empty() && depth < effective_depth {
-        depth += 1;
-        let mut next = Vec::new();
-        for d in &dirs {
-            let (mut more, t) = probe(d, &words, &config, workers, delay, args.title).await;
-            tried += t;
-            for f in &more {
-                if is_dir(f, &mut seen) {
-                    next.push(f.url.clone());
-                }
-            }
-            found.append(&mut more);
-        }
-        next.sort();
-        dirs = next;
-    }
 
     found.sort_by(|a, b| a.status.cmp(&b.status).then(a.url.cmp(&b.url)));
     let shown: Vec<&Found> = match &allow {
@@ -136,6 +119,47 @@ pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
         start.elapsed().as_secs_f64()
     );
     Ok(())
+}
+
+async fn scan_base(
+    base: &str,
+    words: &Arc<Vec<String>>,
+    config: &ClientConfig,
+    workers: u32,
+    delay: Duration,
+    with_title: bool,
+    depth_limit: usize,
+) -> (Vec<Found>, u64) {
+    let mut tried = 0u64;
+    let (mut found, t) = probe(base, words, config, workers, delay, with_title).await;
+    tried += t;
+
+    let mut seen = HashSet::new();
+    let mut dirs: Vec<String> = found
+        .iter()
+        .filter(|f| is_dir(f, &mut seen))
+        .map(|f| f.url.clone())
+        .collect();
+    dirs.sort();
+
+    let mut depth = 0usize;
+    while !dirs.is_empty() && depth < depth_limit {
+        depth += 1;
+        let mut next = Vec::new();
+        for d in &dirs {
+            let (mut more, t) = probe(d, words, config, workers, delay, with_title).await;
+            tried += t;
+            for f in &more {
+                if is_dir(f, &mut seen) {
+                    next.push(f.url.clone());
+                }
+            }
+            found.append(&mut more);
+        }
+        next.sort();
+        dirs = next;
+    }
+    (found, tried)
 }
 
 fn is_dir(f: &Found, seen: &mut HashSet<String>) -> bool {
