@@ -58,7 +58,11 @@ auger scan https://example.com/ -w wordlist.txt               # find non-404 pat
 auger scan https://example.com/ -w wordlist.txt -e php,html   # also try .php and .html
 auger scan https://example.com/ -w wordlist.txt -o hits.txt   # save status + url lines
 auger scan https://example.com/ -w wordlist.txt -R            # also probe robots.txt + sitemap.xml paths
+auger scan https://example.com/ -w wordlist.txt --depth 2     # cap recursion into 2xx directories
+auger scan https://example.com/ -w wordlist.txt --no-recursion # probe only the base path
 auger scan https://example.com/ -w wordlist.txt --json        # machine-readable output
+cat urls.txt | auger scan -w wordlist.txt --stdin             # scan many bases from stdin
+cat urls.txt | auger scan -w wordlist.txt --stdin --silent    # print only "status url" lines
 ```
 
 ## inspect

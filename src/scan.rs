@@ -21,28 +21,38 @@ struct Found {
 }
 
 pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
-    let mut words = expand(load_words(&args.wordlist)?, args.extensions.as_deref());
+    let words = expand(load_words(&args.wordlist)?, args.extensions.as_deref());
     if words.is_empty() {
         anyhow::bail!("wordlist '{}' has no entries", args.wordlist);
     }
 
     let config = ClientConfig::from_http(&args.http);
     let client = config.build()?;
+    let bases = match &args.url {
+        Some(url) => vec![url.clone()],
+        None => read_stdin_urls()?,
+    };
+
+    let mut base_words: Vec<Arc<Vec<String>>> = Vec::new();
     let mut extra = 0usize;
-    if args.robots {
-        let found = robots_paths(&args.url, &client).await;
-        let mut seen: HashSet<String> = words.iter().cloned().collect();
-        for p in found {
-            if seen.insert(p.clone()) {
-                words.push(p);
-                extra += 1;
+    for base in &bases {
+        let mut w = words.clone();
+        if args.robots {
+            let found = robots_paths(base, &client).await;
+            let mut seen: HashSet<String> = w.iter().cloned().collect();
+            for p in found {
+                if seen.insert(p.clone()) {
+                    w.push(p);
+                    extra += 1;
+                }
             }
         }
+        base_words.push(Arc::new(w));
     }
-    if extra > 0 && !json {
+    if extra > 0 && !json && !args.silent {
         println!("  {} paths from robots/sitemap", extra);
     }
-    let words = Arc::new(words);
+
     let workers = args.concurrency.max(1);
     let delay = Duration::from_millis(args.delay);
     let effective_depth = if args.no_recursion {
@@ -65,23 +75,24 @@ pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
     };
 
     let mut tried = 0u64;
-    let (mut found, t) = scan_base(
-        &args.url,
-        &words,
-        &config,
-        workers,
-        delay,
-        args.title,
-        effective_depth,
-    )
-    .await;
-    tried += t;
+    let mut found = Vec::new();
+    for (base, w) in bases.iter().zip(&base_words) {
+        let (mut f, t) = scan_base(
+            base,
+            w,
+            &config,
+            workers,
+            delay,
+            args.title,
+            effective_depth,
+        )
+        .await;
+        tried += t;
+        found.append(&mut f);
+    }
 
     found.sort_by(|a, b| a.status.cmp(&b.status).then(a.url.cmp(&b.url)));
-    let shown: Vec<&Found> = match &allow {
-        Some(list) => found.iter().filter(|f| list.contains(&f.status)).collect(),
-        None => found.iter().filter(|f| f.status != 404).collect(),
-    };
+    let shown = filter_shown(&found, &allow);
 
     if let Some(out) = args.output.as_deref() {
         let mut data = String::new();
@@ -89,7 +100,7 @@ pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
             data.push_str(&format!("{} {}\n", f.status, f.url));
         }
         std::fs::write(out, data)?;
-        if !json {
+        if !json && !args.silent {
             println!("  wrote {} paths to {}", shown.len(), out);
         }
     }
@@ -106,10 +117,22 @@ pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!();
-    println!("  {} {}", "auger scan".bold().cyan(), args.url);
-    for f in &shown {
-        println!("{}", row(f));
+    if args.silent {
+        for f in &shown {
+            println!("{} {}", f.status, f.url);
+        }
+        return Ok(());
+    }
+
+    for base in &bases {
+        println!();
+        println!("  {} {}", "auger scan".bold().cyan(), base);
+        let prefix = base.trim_end_matches('/');
+        for f in &shown {
+            if f.url.starts_with(prefix) {
+                println!("{}", row(f));
+            }
+        }
     }
     println!();
     println!(
@@ -119,6 +142,29 @@ pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
         start.elapsed().as_secs_f64()
     );
     Ok(())
+}
+
+fn read_stdin_urls() -> anyhow::Result<Vec<String>> {
+    let urls = read_urls(std::io::stdin().lock());
+    if urls.is_empty() {
+        anyhow::bail!("no base URLs read from stdin");
+    }
+    Ok(urls)
+}
+
+fn read_urls<R: std::io::BufRead>(r: R) -> Vec<String> {
+    r.lines()
+        .map_while(Result::ok)
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+fn filter_shown<'a>(found: &'a [Found], allow: &Option<Vec<u16>>) -> Vec<&'a Found> {
+    match allow {
+        Some(list) => found.iter().filter(|f| list.contains(&f.status)).collect(),
+        None => found.iter().filter(|f| f.status != 404).collect(),
+    }
 }
 
 async fn scan_base(
@@ -367,6 +413,50 @@ mod tests {
         ]);
         assert!(s.no_recursion);
         assert_eq!(s.depth, 5);
+    }
+
+    #[test]
+    fn scan_requires_url_or_stdin() {
+        assert!(Cli::try_parse_from(["auger", "scan", "http://x", "-w", "w"]).is_ok());
+        assert!(Cli::try_parse_from(["auger", "scan", "-w", "w", "--stdin"]).is_ok());
+        assert!(Cli::try_parse_from(["auger", "scan", "-w", "w"]).is_err());
+        assert!(Cli::try_parse_from(["auger", "scan", "http://x", "-w", "w", "--stdin"]).is_err());
+    }
+
+    #[test]
+    fn filter_shown_drops_404() {
+        let found: Vec<super::Found> = vec![found(200), found(404), found(301)];
+        let shown = super::filter_shown(&found, &None);
+        let statuses: Vec<u16> = shown.iter().map(|f| f.status).collect();
+        assert_eq!(statuses, vec![200, 301]);
+    }
+
+    #[test]
+    fn filter_shown_match_status() {
+        let found: Vec<super::Found> = vec![found(200), found(403)];
+        let shown = super::filter_shown(&found, &Some(vec![403]));
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].status, 403);
+    }
+
+    #[test]
+    fn read_urls_trims_and_skips() {
+        use std::io::Cursor;
+        assert_eq!(
+            super::read_urls(Cursor::new(" https://a.com \n\nhttps://b.com\n")),
+            vec!["https://a.com", "https://b.com"]
+        );
+        assert!(super::read_urls(Cursor::new("\n \n")).is_empty());
+    }
+
+    fn found(status: u16) -> super::Found {
+        super::Found {
+            url: format!("http://x/{status}"),
+            status,
+            size: 0,
+            ms: 0.0,
+            title: None,
+        }
     }
 
     #[test]

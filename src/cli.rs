@@ -145,7 +145,8 @@ pub struct RunArgs {
 #[derive(clap::Args)]
 pub struct ScanArgs {
     /// Base URL to probe, e.g. https://target.com/
-    pub url: String,
+    #[arg(required_unless_present = "stdin", conflicts_with = "stdin")]
+    pub url: Option<String>,
 
     #[arg(short, long)]
     pub wordlist: String,
@@ -183,6 +184,14 @@ pub struct ScanArgs {
     /// Recursion depth for 2xx directories
     #[arg(long, default_value_t = 3)]
     pub depth: u32,
+
+    /// Read base URLs from stdin, one per line
+    #[arg(long)]
+    pub stdin: bool,
+
+    /// Print only matching paths ("status url" per line)
+    #[arg(long)]
+    pub silent: bool,
 
     #[command(flatten)]
     pub http: HttpOptions,
