@@ -8,14 +8,54 @@ use crate::cli::CheckArgs;
 use crate::client::ClientConfig;
 
 const SECURITY: [(&str, &str, u8, &str); 8] = [
-    ("strict-transport-security", "HSTS", 20, "strict-transport-security: max-age=31536000"),
-    ("content-security-policy", "CSP", 20, "content-security-policy: default-src 'self'"),
-    ("x-frame-options", "clickjacking", 15, "x-frame-options: DENY"),
-    ("x-content-type-options", "mime sniffing", 10, "x-content-type-options: nosniff"),
-    ("referrer-policy", "referrer", 10, "referrer-policy: no-referrer"),
-    ("permissions-policy", "permissions", 10, "permissions-policy: geolocation=()"),
-    ("cross-origin-opener-policy", "COOP", 10, "cross-origin-opener-policy: same-origin"),
-    ("cross-origin-resource-policy", "CORP", 5, "cross-origin-resource-policy: same-origin"),
+    (
+        "strict-transport-security",
+        "HSTS",
+        20,
+        "strict-transport-security: max-age=31536000",
+    ),
+    (
+        "content-security-policy",
+        "CSP",
+        20,
+        "content-security-policy: default-src 'self'",
+    ),
+    (
+        "x-frame-options",
+        "clickjacking",
+        15,
+        "x-frame-options: DENY",
+    ),
+    (
+        "x-content-type-options",
+        "mime sniffing",
+        10,
+        "x-content-type-options: nosniff",
+    ),
+    (
+        "referrer-policy",
+        "referrer",
+        10,
+        "referrer-policy: no-referrer",
+    ),
+    (
+        "permissions-policy",
+        "permissions",
+        10,
+        "permissions-policy: geolocation=()",
+    ),
+    (
+        "cross-origin-opener-policy",
+        "COOP",
+        10,
+        "cross-origin-opener-policy: same-origin",
+    ),
+    (
+        "cross-origin-resource-policy",
+        "CORP",
+        5,
+        "cross-origin-resource-policy: same-origin",
+    ),
 ];
 
 #[derive(Serialize)]
