@@ -117,7 +117,11 @@ async fn fetch(host: &str, port: u16) -> anyhow::Result<CertInfo> {
     let not_after = cert.validity().not_after.timestamp();
     let days_left = (not_after - now) / 86400;
 
-    let key_size = cert.public_key().parsed().map(|k| k.key_size()).unwrap_or(0);
+    let key_size = cert
+        .public_key()
+        .parsed()
+        .map(|k| k.key_size())
+        .unwrap_or(0);
     let key = if key_size > 0 {
         format!("{} bits", key_size)
     } else {
@@ -181,12 +185,7 @@ fn ymd(secs: i64) -> String {
     let mp = (5 * doy + 2) / 153;
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    format!(
-        "{:04}-{:02}-{:02}",
-        if m <= 2 { y + 1 } else { y },
-        m,
-        d
-    )
+    format!("{:04}-{:02}-{:02}", if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 #[cfg(test)]
@@ -195,7 +194,10 @@ mod tests {
 
     #[test]
     fn target_default_port() {
-        assert_eq!(parse_target("example.com").unwrap(), ("example.com".into(), 443));
+        assert_eq!(
+            parse_target("example.com").unwrap(),
+            ("example.com".into(), 443)
+        );
         assert_eq!(
             parse_target("https://example.com/").unwrap(),
             ("example.com".into(), 443)
@@ -204,7 +206,10 @@ mod tests {
 
     #[test]
     fn target_custom_port() {
-        assert_eq!(parse_target("example.com:8443").unwrap(), ("example.com".into(), 8443));
+        assert_eq!(
+            parse_target("example.com:8443").unwrap(),
+            ("example.com".into(), 8443)
+        );
         assert_eq!(
             parse_target("https://example.com:9443/x").unwrap(),
             ("example.com".into(), 9443)
