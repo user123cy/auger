@@ -7,15 +7,15 @@ use serde::Serialize;
 use crate::cli::CheckArgs;
 use crate::client::ClientConfig;
 
-const SECURITY: [(&str, &str, u8); 8] = [
-    ("strict-transport-security", "HSTS", 20),
-    ("content-security-policy", "CSP", 20),
-    ("x-frame-options", "clickjacking", 15),
-    ("x-content-type-options", "mime sniffing", 10),
-    ("referrer-policy", "referrer", 10),
-    ("permissions-policy", "permissions", 10),
-    ("cross-origin-opener-policy", "COOP", 10),
-    ("cross-origin-resource-policy", "CORP", 5),
+const SECURITY: [(&str, &str, u8, &str); 8] = [
+    ("strict-transport-security", "HSTS", 20, "strict-transport-security: max-age=31536000"),
+    ("content-security-policy", "CSP", 20, "content-security-policy: default-src 'self'"),
+    ("x-frame-options", "clickjacking", 15, "x-frame-options: DENY"),
+    ("x-content-type-options", "mime sniffing", 10, "x-content-type-options: nosniff"),
+    ("referrer-policy", "referrer", 10, "referrer-policy: no-referrer"),
+    ("permissions-policy", "permissions", 10, "permissions-policy: geolocation=()"),
+    ("cross-origin-opener-policy", "COOP", 10, "cross-origin-opener-policy: same-origin"),
+    ("cross-origin-resource-policy", "CORP", 5, "cross-origin-resource-policy: same-origin"),
 ];
 
 #[derive(Serialize)]
@@ -46,6 +46,8 @@ struct HeaderCheck {
     label: &'static str,
     present: bool,
     value: Option<String>,
+    /// header line to add when missing
+    suggest: Option<&'static str>,
 }
 
 pub async fn run(args: &CheckArgs, json: bool) -> anyhow::Result<()> {
@@ -178,9 +180,9 @@ fn print_result(r: &CheckResult) {
     for red in &r.redirects {
         println!(
             "  redirect {}  {}  {:.0}ms",
-            red.status,
             status_str(red.status),
-            red.url
+            red.url,
+            red.ms
         );
     }
     if !r.cookies.is_empty() {
@@ -189,17 +191,14 @@ fn print_result(r: &CheckResult) {
     println!();
     println!("  security headers");
     for h in &r.headers {
-        match &h.value {
-            Some(v) => println!("  {} {:<13} {}", "✓".green(), h.label, v),
-            None => println!("  {} {:<13} missing", "✗".red(), h.label),
+        match (&h.value, h.suggest) {
+            (Some(v), _) => println!("  {} {:<13} {}", "✓".green(), h.label, v),
+            (None, Some(s)) => println!("  {} {:<13} missing · {}", "✗".red(), h.label, s),
+            (None, None) => println!("  {} {:<13} missing", "✗".red(), h.label),
         }
     }
     println!();
-    println!(
-        "  grade  {}  ({}/100)",
-        colored_grade(r.grade, r.score),
-        r.score
-    );
+    println!("  grade  {}", colored_grade(r.grade, r.score));
 }
 
 fn colored_grade(g: char, score: u8) -> String {
@@ -214,7 +213,7 @@ fn colored_grade(g: char, score: u8) -> String {
 fn security_rows(headers: &reqwest::header::HeaderMap) -> (u8, Vec<HeaderCheck>) {
     let mut score = 0u8;
     let mut rows = Vec::with_capacity(SECURITY.len());
-    for (name, label, weight) in SECURITY {
+    for (name, label, weight, suggest) in SECURITY {
         match headers.get(name).and_then(|v| v.to_str().ok()) {
             Some(v) => {
                 score += weight;
@@ -222,12 +221,14 @@ fn security_rows(headers: &reqwest::header::HeaderMap) -> (u8, Vec<HeaderCheck>)
                     label,
                     present: true,
                     value: Some(v.to_string()),
+                    suggest: None,
                 });
             }
             None => rows.push(HeaderCheck {
                 label,
                 present: false,
                 value: None,
+                suggest: Some(suggest),
             }),
         }
     }
@@ -354,6 +355,7 @@ mod tests {
         assert_eq!(score, 0);
         assert_eq!(rows.len(), 8);
         assert!(rows.iter().all(|r| !r.present));
+        assert!(rows.iter().all(|r| r.suggest.is_some()));
     }
 
     #[test]
