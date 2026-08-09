@@ -1,6 +1,6 @@
 [package]
 name = "auger"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Load test, discover and inspect HTTP endpoints from the terminal"
 license = "MIT"
