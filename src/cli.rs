@@ -176,6 +176,14 @@ pub struct ScanArgs {
     #[arg(short = 'R', long)]
     pub robots: bool,
 
+    /// Disable recursion into 2xx directories
+    #[arg(long)]
+    pub no_recursion: bool,
+
+    /// Recursion depth for 2xx directories
+    #[arg(long, default_value_t = 3)]
+    pub depth: u32,
+
     #[command(flatten)]
     pub http: HttpOptions,
 }

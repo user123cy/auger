@@ -45,6 +45,11 @@ pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
     let words = Arc::new(words);
     let workers = args.concurrency.max(1);
     let delay = Duration::from_millis(args.delay);
+    let effective_depth = if args.no_recursion {
+        0
+    } else {
+        args.depth as usize
+    };
     let start = Instant::now();
 
     let allow: Option<Vec<u16>> = match &args.match_status {
@@ -66,24 +71,20 @@ pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
     let mut seen = HashSet::new();
     let mut dirs: Vec<String> = found
         .iter()
-        .filter(|f| (200..300).contains(&f.status) && f.url.ends_with('/'))
-        .filter(|f| seen.insert(f.url.clone()))
+        .filter(|f| is_dir(f, &mut seen))
         .map(|f| f.url.clone())
         .collect();
     dirs.sort();
 
     let mut depth = 0usize;
-    while !dirs.is_empty() && depth < 3 {
+    while !dirs.is_empty() && depth < effective_depth {
         depth += 1;
         let mut next = Vec::new();
         for d in &dirs {
             let (mut more, t) = probe(d, &words, &config, workers, delay, args.title).await;
             tried += t;
             for f in &more {
-                if (200..300).contains(&f.status)
-                    && f.url.ends_with('/')
-                    && seen.insert(f.url.clone())
-                {
+                if is_dir(f, &mut seen) {
                     next.push(f.url.clone());
                 }
             }
@@ -135,6 +136,10 @@ pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
         start.elapsed().as_secs_f64()
     );
     Ok(())
+}
+
+fn is_dir(f: &Found, seen: &mut HashSet<String>) -> bool {
+    (200..300).contains(&f.status) && f.url.ends_with('/') && seen.insert(f.url.clone())
 }
 
 async fn probe(
@@ -299,7 +304,62 @@ fn decode_wordlist(bytes: &[u8], path: &str) -> anyhow::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::decode_wordlist;
+    use clap::Parser;
+
+    use super::{decode_wordlist, is_dir};
+    use crate::cli::Cli;
+
+    fn parse_scan(args: &[&str]) -> crate::cli::ScanArgs {
+        match Cli::try_parse_from(args).unwrap().command {
+            crate::cli::Commands::Scan(s) => s,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn scan_depth_default() {
+        let s = parse_scan(&["auger", "scan", "http://x", "-w", "w"]);
+        assert_eq!(s.depth, 3);
+        assert!(!s.no_recursion);
+    }
+
+    #[test]
+    fn scan_depth_custom() {
+        let s = parse_scan(&["auger", "scan", "http://x", "-w", "w", "--depth", "5"]);
+        assert_eq!(s.depth, 5);
+    }
+
+    #[test]
+    fn scan_no_recursion_wins_over_depth() {
+        let s = parse_scan(&[
+            "auger",
+            "scan",
+            "http://x",
+            "-w",
+            "w",
+            "--no-recursion",
+            "--depth",
+            "5",
+        ]);
+        assert!(s.no_recursion);
+        assert_eq!(s.depth, 5);
+    }
+
+    #[test]
+    fn dir_collected_once() {
+        let mut seen = std::collections::HashSet::new();
+        let f = |url: &str| super::Found {
+            url: url.into(),
+            status: 200,
+            size: 0,
+            ms: 0.0,
+            title: None,
+        };
+        assert!(is_dir(&f("http://x/a/"), &mut seen));
+        assert!(!is_dir(&f("http://x/a/"), &mut seen));
+        assert!(is_dir(&f("http://x/b/"), &mut seen));
+        assert!(!is_dir(&f("http://x/b"), &mut seen));
+    }
 
     #[test]
     fn plain_utf8() {
