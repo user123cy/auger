@@ -82,6 +82,9 @@ fn print_summary(report: &Report, stats: &Stats) {
             .collect();
         println!("  status  {}", parts.join("  "));
     }
+    for e in &report.first_errors {
+        println!("  error  {}", e);
+    }
     println!();
 }
 

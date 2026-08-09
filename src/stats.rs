@@ -25,6 +25,8 @@ pub struct Report {
     pub ttfb_ms: Vec<f64>,
     #[serde(default)]
     pub slowest_ms: Vec<f64>,
+    #[serde(default)]
+    pub first_errors: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -144,6 +146,7 @@ mod tests {
             errors_tls: 0,
             errors_other: 0,
             slowest_ms: vec![],
+            first_errors: vec![],
         }
     }
 

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -31,6 +32,17 @@ impl ErrCount {
 }
 
 // reqwest 0.12 has no is_tls(), so walk the error chain looking for a TLS origin.
+// reqwest wraps the real cause, so walk to the deepest message.
+fn error_detail(e: &reqwest::Error) -> String {
+    let mut msg = e.to_string();
+    let mut src = e.source();
+    while let Some(s) = src {
+        msg = s.to_string();
+        src = s.source();
+    }
+    msg
+}
+
 fn is_tls(e: &reqwest::Error) -> bool {
     if !e.is_connect() {
         return false;
@@ -76,6 +88,7 @@ pub async fn run(args: &RunArgs, quiet: bool) -> anyhow::Result<Report> {
 
     let done = Arc::new(AtomicU64::new(0));
     let fail = Arc::new(AtomicU64::new(0));
+    let first_errs = Arc::new(Mutex::new(Vec::new()));
     let progress = if quiet {
         None
     } else {
@@ -111,6 +124,7 @@ pub async fn run(args: &RunArgs, quiet: bool) -> anyhow::Result<Report> {
         };
         let done = done.clone();
         let fail = fail.clone();
+        let first_errs = first_errs.clone();
         handles.push(tokio::spawn(async move {
             let client = config.build()?;
             if !ramp_delay.is_zero() {
@@ -155,6 +169,11 @@ pub async fn run(args: &RunArgs, quiet: bool) -> anyhow::Result<Report> {
                     }
                     Err(e) => {
                         errors.add(&e);
+                        if let Ok(mut v) = first_errs.lock()
+                            && v.len() < 3
+                        {
+                            v.push(error_detail(&e));
+                        }
                         fail.fetch_add(1, Ordering::Relaxed);
                     }
                 }
@@ -192,6 +211,10 @@ pub async fn run(args: &RunArgs, quiet: bool) -> anyhow::Result<Report> {
     }
     slowest.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
     slowest.truncate(5);
+    let first_errors = match Arc::try_unwrap(first_errs) {
+        Ok(m) => m.into_inner().unwrap_or_else(|p| p.into_inner()),
+        Err(_) => Vec::new(),
+    };
     if let Some(p) = progress {
         p.abort();
     }
@@ -218,5 +241,6 @@ pub async fn run(args: &RunArgs, quiet: bool) -> anyhow::Result<Report> {
         latencies_ms: latencies,
         ttfb_ms,
         slowest_ms: slowest,
+        first_errors,
     })
 }
