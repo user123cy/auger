@@ -7,11 +7,12 @@
 
 Load test, discover and inspect HTTP endpoints from the terminal.
 
-Three commands, one binary:
+Four commands, one binary:
 
 - `auger run` — hammer a URL with concurrent requests, get percentiles, a latency histogram and a flamegraph
 - `auger scan` — brute-force endpoints with a wordlist
 - `auger check` — inspect status, HTTP version and security headers with an A-F grade
+- `auger cert` — show the TLS certificate for a host
 
 ## install
 
@@ -68,6 +69,16 @@ auger check https://example.com/ --json
 ```
 
 Shows status, HTTP version, server and which security headers are present: HSTS, CSP, clickjacking, mime sniffing, referrer, permissions, COOP, CORP. The headers are weighted and scored into a letter grade (A-F) in the style of securityheaders.com. Missing headers show the exact header line to add.
+
+## certificate
+
+```
+auger cert example.com
+auger cert example.com:8443
+auger cert https://example.com/ --json
+```
+
+Shows the subject, issuer, TLS version, key size, signature algorithm, chain length, validity dates, days left and SANs. Exits non-zero when the certificate is expired and warns on stderr when it expires within 30 days.
 
 ## reports
 

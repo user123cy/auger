@@ -26,6 +26,8 @@ pub enum Commands {
     Scan(ScanArgs),
     /// Inspect a URL: status, HTTP version and security headers
     Check(CheckArgs),
+    /// Show the TLS certificate for a host
+    Cert(CertArgs),
     /// Print a saved report
     Report {
         json: String,
@@ -176,6 +178,12 @@ pub struct ScanArgs {
 
     #[command(flatten)]
     pub http: HttpOptions,
+}
+
+#[derive(clap::Args)]
+pub struct CertArgs {
+    /// Host or URL, e.g. example.com:8443
+    pub target: String,
 }
 
 #[derive(clap::Args)]

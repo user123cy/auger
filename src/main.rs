@@ -1,3 +1,4 @@
+mod cert;
 mod check;
 mod cli;
 mod client;
@@ -43,6 +44,7 @@ async fn run(cli: cli::Cli) -> anyhow::Result<()> {
         }
         cli::Commands::Scan(args) => scan::run(&args, cli.json).await?,
         cli::Commands::Check(args) => check::run(&args, cli.json).await?,
+        cli::Commands::Cert(args) => cert::run(&args.target, cli.json).await?,
         cli::Commands::Report {
             json,
             csv,
