@@ -6,10 +6,12 @@ mod color;
 mod compare;
 mod fmt;
 mod html;
+mod ping;
 mod report;
 mod runner;
 mod scan;
 mod stats;
+mod tls;
 
 use clap::Parser;
 
@@ -34,17 +36,24 @@ async fn run(cli: cli::Cli) -> anyhow::Result<()> {
                 std::fs::write(path, serde_json::to_string_pretty(&report)?)?;
                 println!("\n  saved baseline to {}", path);
             }
+            let mut regression = false;
             if let Some(path) = &args.compare {
-                let baseline = load(path)?;
-                compare::print(&baseline.stats(), &report.stats(), args.threshold);
+                let rows = compare::diff(&load(path)?.stats(), &report.stats(), args.threshold);
+                if cli.json {
+                    println!("{}", serde_json::to_string_pretty(&rows)?);
+                } else {
+                    compare::print_rows(&rows);
+                }
+                regression = rows.iter().any(|r| r.regression);
             }
-            if report.errors > 0 {
+            if regression || report.errors > 0 {
                 std::process::exit(1);
             }
         }
         cli::Commands::Scan(args) => scan::run(&args, cli.json).await?,
         cli::Commands::Check(args) => check::run(&args, cli.json).await?,
         cli::Commands::Cert(args) => cert::run(&args.target, cli.json).await?,
+        cli::Commands::Ping(args) => ping::run(&args, cli.json).await?,
         cli::Commands::Report {
             json,
             csv,
@@ -66,7 +75,15 @@ async fn run(cli: cli::Cli) -> anyhow::Result<()> {
             println!("  wrote {}", out);
         }
         cli::Commands::Compare { before, after } => {
-            compare::print(&load(&before)?.stats(), &load(&after)?.stats(), 1.1);
+            let rows = compare::diff(&load(&before)?.stats(), &load(&after)?.stats(), 1.1);
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            } else {
+                compare::print_rows(&rows);
+            }
+            if rows.iter().any(|r| r.regression) {
+                std::process::exit(1);
+            }
         }
     }
     Ok(())

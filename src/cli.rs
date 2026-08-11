@@ -28,6 +28,8 @@ pub enum Commands {
     Check(CheckArgs),
     /// Show the TLS certificate for a host
     Cert(CertArgs),
+    /// Measure per-phase latency of a single HTTP request
+    Ping(PingArgs),
     /// Print a saved report
     Report {
         json: String,
@@ -193,6 +195,14 @@ pub struct ScanArgs {
     #[arg(long)]
     pub silent: bool,
 
+    /// Exclude these status codes, comma separated, e.g. 403,500
+    #[arg(long)]
+    pub filter_status: Option<String>,
+
+    /// Exclude responses with exactly this body size in bytes
+    #[arg(long)]
+    pub filter_size: Option<u64>,
+
     #[command(flatten)]
     pub http: HttpOptions,
 }
@@ -210,6 +220,19 @@ pub struct CheckArgs {
     /// Read URLs from a file, one per line
     #[arg(short = 'f', long)]
     pub file: Option<String>,
+
+    #[command(flatten)]
+    pub http: HttpOptions,
+}
+
+#[derive(clap::Args)]
+pub struct PingArgs {
+    /// URL to ping, e.g. https://example.com/
+    pub url: String,
+
+    /// Number of requests to send
+    #[arg(short = 'c', long, default_value_t = 1)]
+    pub count: u32,
 
     #[command(flatten)]
     pub http: HttpOptions,
