@@ -29,6 +29,32 @@ impl ErrCount {
             self.other += 1;
         }
     }
+
+    fn add_all(&mut self, o: &ErrCount) {
+        self.timeout += o.timeout;
+        self.connect += o.connect;
+        self.tls += o.tls;
+        self.other += o.other;
+    }
+}
+
+type WorkerOut = (
+    Vec<f64>,
+    Vec<f64>,
+    BTreeMap<u16, u64>,
+    ErrCount,
+    u64,
+    Vec<f64>,
+);
+
+#[derive(Default)]
+struct Collected {
+    latencies: Vec<f64>,
+    ttfb_ms: Vec<f64>,
+    statuses: BTreeMap<u16, u64>,
+    errors: ErrCount,
+    bytes: u64,
+    slowest: Vec<f64>,
 }
 
 // reqwest 0.12 has no is_tls(), so walk the error chain looking for a TLS origin.
@@ -56,6 +82,79 @@ fn is_tls(e: &reqwest::Error) -> bool {
         src = s.source();
     }
     false
+}
+
+fn progress(
+    done: &Arc<AtomicU64>,
+    fail: &Arc<AtomicU64>,
+    quiet: bool,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if quiet {
+        return None;
+    }
+    let done_p = done.clone();
+    let fail_p = fail.clone();
+    Some(tokio::spawn(async move {
+        let mut iv = tokio::time::interval(Duration::from_secs(1));
+        iv.tick().await;
+        loop {
+            iv.tick().await;
+            eprint!(
+                "\r\x1b[2K  {} req · {} errors",
+                done_p.load(Ordering::Relaxed),
+                fail_p.load(Ordering::Relaxed)
+            );
+        }
+    }))
+}
+
+async fn collect_data(
+    handles: Vec<tokio::task::JoinHandle<anyhow::Result<WorkerOut>>>,
+) -> Collected {
+    let mut out = Collected::default();
+    for h in handles {
+        if let Ok(Ok((mut samples, mut ttfb, statuses, errors, bytes, mut slowest))) = h.await {
+            out.latencies.append(&mut samples);
+            out.ttfb_ms.append(&mut ttfb);
+            for (k, v) in statuses {
+                *out.statuses.entry(k).or_insert(0) += v;
+            }
+            out.errors.add_all(&errors);
+            out.bytes += bytes;
+            out.slowest.append(&mut slowest);
+        }
+    }
+    out.slowest
+        .sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    out.slowest.truncate(5);
+    out
+}
+
+fn build_report(
+    url: String,
+    workers: u32,
+    elapsed_ms: u64,
+    c: Collected,
+    first_errors: Vec<String>,
+) -> Report {
+    let total_errors = c.errors.timeout + c.errors.connect + c.errors.tls + c.errors.other;
+    Report {
+        url,
+        concurrency: workers,
+        elapsed_ms,
+        requests: c.latencies.len() as u64 + total_errors,
+        errors: total_errors,
+        errors_timeout: c.errors.timeout,
+        errors_connect: c.errors.connect,
+        errors_tls: c.errors.tls,
+        errors_other: c.errors.other,
+        statuses: c.statuses,
+        bytes: c.bytes,
+        latencies_ms: c.latencies,
+        ttfb_ms: c.ttfb_ms,
+        slowest_ms: c.slowest,
+        first_errors,
+    }
 }
 
 pub async fn run(args: &RunArgs, quiet: bool) -> anyhow::Result<Report> {
@@ -89,24 +188,7 @@ pub async fn run(args: &RunArgs, quiet: bool) -> anyhow::Result<Report> {
     let done = Arc::new(AtomicU64::new(0));
     let fail = Arc::new(AtomicU64::new(0));
     let first_errs = Arc::new(Mutex::new(Vec::new()));
-    let progress = if quiet {
-        None
-    } else {
-        let done_p = done.clone();
-        let fail_p = fail.clone();
-        Some(tokio::spawn(async move {
-            let mut iv = tokio::time::interval(Duration::from_secs(1));
-            iv.tick().await;
-            loop {
-                iv.tick().await;
-                eprint!(
-                    "\r\x1b[2K  {} req · {} errors",
-                    done_p.load(Ordering::Relaxed),
-                    fail_p.load(Ordering::Relaxed)
-                );
-            }
-        }))
-    };
+    let progress = progress(&done, &fail, quiet);
 
     let mut handles = Vec::new();
     for i in 0..workers {
@@ -185,32 +267,7 @@ pub async fn run(args: &RunArgs, quiet: bool) -> anyhow::Result<Report> {
         }));
     }
 
-    let mut latencies = Vec::new();
-    let mut ttfb_ms = Vec::new();
-    let mut statuses = BTreeMap::new();
-    let mut total_timeout = 0u64;
-    let mut total_connect = 0u64;
-    let mut total_tls = 0u64;
-    let mut total_other = 0u64;
-    let mut total_bytes = 0u64;
-    let mut slowest = Vec::new();
-    for h in handles {
-        if let Ok(Ok((mut samples, mut t, s, e, bytes, mut top))) = h.await {
-            latencies.append(&mut samples);
-            ttfb_ms.append(&mut t);
-            for (k, v) in s {
-                *statuses.entry(k).or_insert(0) += v;
-            }
-            total_timeout += e.timeout;
-            total_connect += e.connect;
-            total_tls += e.tls;
-            total_other += e.other;
-            total_bytes += bytes;
-            slowest.append(&mut top);
-        }
-    }
-    slowest.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    slowest.truncate(5);
+    let collected = collect_data(handles).await;
     let first_errors = match Arc::try_unwrap(first_errs) {
         Ok(m) => m.into_inner().unwrap_or_else(|p| p.into_inner()),
         Err(_) => Vec::new(),
@@ -223,24 +280,11 @@ pub async fn run(args: &RunArgs, quiet: bool) -> anyhow::Result<Report> {
     }
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
-    let total_errors = total_timeout + total_connect + total_tls + total_other;
-    let requests = latencies.len() as u64 + total_errors;
-
-    Ok(Report {
-        url: args.url.clone(),
-        concurrency: workers,
+    Ok(build_report(
+        args.url.clone(),
+        workers,
         elapsed_ms,
-        requests,
-        errors: total_errors,
-        errors_timeout: total_timeout,
-        errors_connect: total_connect,
-        errors_tls: total_tls,
-        errors_other: total_other,
-        statuses,
-        bytes: total_bytes,
-        latencies_ms: latencies,
-        ttfb_ms,
-        slowest_ms: slowest,
+        collected,
         first_errors,
-    })
+    ))
 }
