@@ -45,7 +45,7 @@ fn print_summary(report: &Report, stats: &Stats) {
     println!(
         "  {} workers · {}s · {} req · {} req/s",
         report.concurrency,
-        secs,
+        dec1(secs),
         group(report.requests),
         group(stats.rps.round() as u64)
     );

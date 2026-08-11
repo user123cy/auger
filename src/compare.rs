@@ -1,14 +1,17 @@
 use colored::Colorize;
+use serde::Serialize;
 
 use crate::fmt::{ms, whole};
 use crate::stats::Stats;
 
+#[derive(Serialize)]
 pub struct DiffRow {
     pub label: &'static str,
     pub before: f64,
     pub after: f64,
     pub regression: bool,
     pub improved: bool,
+    #[serde(skip)]
     higher_is_better: bool,
 }
 
@@ -57,15 +60,14 @@ fn row(label: &'static str, before: f64, after: f64) -> DiffRow {
     }
 }
 
-pub fn print(before: &Stats, after: &Stats, threshold: f64) {
-    let rows = diff(before, after, threshold);
+pub fn print_rows(rows: &[DiffRow]) {
     println!();
     println!("  compare — baseline vs current");
     println!(
         "  {:<6} {:>10} {:>10} {:>9}",
         "metric", "before", "after", "change"
     );
-    for r in &rows {
+    for r in rows {
         let pct = if r.before > 0.0 {
             (r.after / r.before - 1.0) * 100.0
         } else {

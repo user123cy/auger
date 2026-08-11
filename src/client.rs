@@ -39,7 +39,7 @@ impl ClientConfig {
             user_agent: http
                 .user_agent
                 .clone()
-                .unwrap_or_else(|| "auger/0.1".into()),
+                .unwrap_or_else(|| format!("auger/{}", env!("CARGO_PKG_VERSION"))),
             headers: http.headers.clone(),
             basic: None,
             token: None,
