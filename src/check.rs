@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Instant;
 
 use colored::Colorize;
@@ -68,10 +67,19 @@ struct CheckResult {
     bytes: u64,
     ms: f64,
     redirects: Vec<Redirect>,
-    cookies: Vec<String>,
+    cookies: Vec<CookieInfo>,
     grade: char,
     score: u8,
     headers: Vec<HeaderCheck>,
+}
+
+#[derive(Serialize)]
+struct CookieInfo {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    same_site: Option<String>,
+    secure: bool,
+    http_only: bool,
 }
 
 #[derive(Serialize)]
@@ -140,7 +148,7 @@ async fn check_url(client: &reqwest::Client, url: &str) -> Result<CheckResult, S
     };
 
     let mut current = url.to_string();
-    let mut cookies: Vec<String> = Vec::new();
+    let mut cookies: Vec<CookieInfo> = Vec::new();
     let mut redirects: Vec<Redirect> = Vec::new();
     let mut hops = 0usize;
     let mut first: Option<(u16, &'static str, String, u64, f64)> = None;
@@ -155,9 +163,9 @@ async fn check_url(client: &reqwest::Client, url: &str) -> Result<CheckResult, S
         let headers = resp.headers().clone();
         for v in headers.get_all("set-cookie") {
             if let Ok(s) = v.to_str() {
-                let name = s.split(';').next().unwrap_or(s).trim().to_string();
-                if !cookies.contains(&name) {
-                    cookies.push(name);
+                let info = parse_cookie(s);
+                if !cookies.iter().any(|c| c.name == info.name) {
+                    cookies.push(info);
                 }
             }
         }
@@ -226,7 +234,8 @@ fn print_result(r: &CheckResult) {
         );
     }
     if !r.cookies.is_empty() {
-        println!("  cookies  {}", r.cookies.join(", "));
+        let list: Vec<String> = r.cookies.iter().map(cookie_str).collect();
+        println!("  cookies  {}", list.join(" · "));
     }
     println!();
     println!("  security headers");
@@ -286,47 +295,71 @@ fn grade(score: u8) -> char {
 }
 
 async fn tls_info(url: &str) -> Option<String> {
-    use rustls::pki_types::ServerName;
-    use tokio_rustls::TlsConnector;
-
-    let rest = url.split("://").nth(1)?;
-    let host = rest.split('/').next()?;
-    let (host, port) = match host.split_once(':') {
-        Some((h, p)) => (h.to_string(), p.parse().ok()?),
-        None => (host.to_string(), 443),
-    };
-
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(
-        webpki_roots::TLS_SERVER_ROOTS
-            .iter()
-            .map(|ta| ta.to_owned()),
-    );
-    let config = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    let connector = TlsConnector::from(Arc::new(config));
-    let stream = tokio::net::TcpStream::connect((host.as_str(), port))
-        .await
-        .ok()?;
-    let name = ServerName::try_from(host).ok()?;
-    let tls = connector.connect(name, stream).await.ok()?;
-
-    let conn = tls.get_ref().1;
-    let der = conn.peer_certificates()?.iter().next()?;
-    let (_, cert) = x509_parser::parse_x509_certificate(der.as_ref()).ok()?;
-    let ver = match conn.protocol_version()? {
-        rustls::ProtocolVersion::TLSv1_3 => "1.3",
-        rustls::ProtocolVersion::TLSv1_2 => "1.2",
-        _ => "older",
-    };
-    let not_after = cert.validity().not_after.to_rfc2822().ok()?;
+    let ep = crate::tls::parse_endpoint(url, crate::tls::Scheme::Https).ok()?;
+    let r = crate::tls::connect_tls(&ep.host, ep.port).await.ok()?;
     Some(format!(
         "TLS {} · issuer {} · expires {}",
-        ver,
-        cert.issuer(),
-        not_after
+        r.info.tls_version, r.info.issuer, r.info.not_after
     ))
+}
+
+fn parse_cookie(raw: &str) -> CookieInfo {
+    let mut parts = raw.split(';');
+    let name = parts
+        .next()
+        .unwrap_or(raw)
+        .split('=')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let mut secure = false;
+    let mut http_only = false;
+    let mut same_site = None;
+    for attr in parts {
+        let lower = attr.trim().to_lowercase();
+        if lower == "secure" {
+            secure = true;
+        } else if lower == "httponly" {
+            http_only = true;
+        } else if let Some(v) = lower
+            .strip_prefix("samesite=")
+            .or_else(|| lower.strip_prefix("same-site="))
+        {
+            same_site = Some(v.to_string());
+        }
+    }
+    CookieInfo {
+        name,
+        same_site,
+        secure,
+        http_only,
+    }
+}
+
+fn cookie_str(c: &CookieInfo) -> String {
+    let ok = c.secure && c.http_only && c.same_site.is_some();
+    let flags = if ok {
+        "ok".to_string()
+    } else {
+        let mut missing = Vec::new();
+        if !c.secure {
+            missing.push("no Secure");
+        }
+        if !c.http_only {
+            missing.push("no HttpOnly");
+        }
+        if c.same_site.is_none() {
+            missing.push("no SameSite");
+        }
+        missing.join(", ")
+    };
+    let line = format!("{} ({})", c.name, flags);
+    if ok {
+        line.green().to_string()
+    } else {
+        line.red().to_string()
+    }
 }
 
 fn resolve(base: &str, loc: &str) -> String {
@@ -372,7 +405,7 @@ fn version_str(v: reqwest::Version) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{grade, resolve, security_rows};
+    use super::{grade, parse_cookie, resolve, security_rows};
 
     #[test]
     fn grade_boundaries() {
@@ -435,5 +468,23 @@ mod tests {
             resolve("https://a.com/dir/", "next"),
             "https://a.com/dir/next"
         );
+    }
+
+    #[test]
+    fn cookie_parses_flags() {
+        let c = parse_cookie("session=abc; Path=/; Secure; HttpOnly; SameSite=Lax");
+        assert_eq!(c.name, "session");
+        assert!(c.secure);
+        assert!(c.http_only);
+        assert_eq!(c.same_site.as_deref(), Some("lax"));
+    }
+
+    #[test]
+    fn cookie_plain() {
+        let c = parse_cookie("id=1");
+        assert_eq!(c.name, "id");
+        assert!(!c.secure);
+        assert!(!c.http_only);
+        assert_eq!(c.same_site, None);
     }
 }
