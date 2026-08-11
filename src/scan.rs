@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use colored::Colorize;
@@ -11,6 +11,12 @@ use crate::cli::ScanArgs;
 use crate::client::ClientConfig;
 use crate::fmt::group;
 
+#[derive(Clone, Copy)]
+struct Wildcard {
+    status: u16,
+    size: u64,
+}
+
 #[derive(Serialize)]
 struct Found {
     url: String,
@@ -18,6 +24,9 @@ struct Found {
     size: u64,
     ms: f64,
     title: Option<String>,
+    /// Wildcard baseline for this base, never serialized
+    #[serde(skip)]
+    wc: Option<Wildcard>,
 }
 
 pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
@@ -63,20 +72,19 @@ pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
     let start = Instant::now();
 
     let allow: Option<Vec<u16>> = match &args.match_status {
-        Some(spec) => {
-            let list: Result<Vec<u16>, _> = spec.split(',').map(|p| p.trim().parse()).collect();
-            Some(list.map_err(|_| {
-                anyhow::anyhow!(
-                    "--match-status must be comma separated status codes, e.g. 200,301,403"
-                )
-            })?)
-        }
+        Some(spec) => Some(parse_status_list(spec, "--match-status")?),
         None => None,
     };
+    let exclude: Vec<u16> = match &args.filter_status {
+        Some(spec) => parse_status_list(spec, "--filter-status")?,
+        None => Vec::new(),
+    };
+    let exclude_size = args.filter_size;
 
     let mut tried = 0u64;
     let mut found = Vec::new();
     for (base, w) in bases.iter().zip(&base_words) {
+        let wc = wildcard(base, &client).await;
         let (mut f, t) = scan_base(
             base,
             w,
@@ -85,6 +93,7 @@ pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
             delay,
             args.title,
             effective_depth,
+            wc,
         )
         .await;
         tried += t;
@@ -92,7 +101,7 @@ pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
     }
 
     found.sort_by(|a, b| a.status.cmp(&b.status).then(a.url.cmp(&b.url)));
-    let shown = filter_shown(&found, &allow);
+    let shown = filter_shown(&found, &allow, &exclude, exclude_size);
 
     if let Some(out) = args.output.as_deref() {
         let mut data = String::new();
@@ -160,13 +169,60 @@ fn read_urls<R: std::io::BufRead>(r: R) -> Vec<String> {
         .collect()
 }
 
-fn filter_shown<'a>(found: &'a [Found], allow: &Option<Vec<u16>>) -> Vec<&'a Found> {
-    match allow {
-        Some(list) => found.iter().filter(|f| list.contains(&f.status)).collect(),
-        None => found.iter().filter(|f| f.status != 404).collect(),
+/// A catch-all response for a random path, used as a false-positive baseline.
+async fn wildcard(base: &str, client: &reqwest::Client) -> Option<Wildcard> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    let target = join(base, &format!("/auger_wc_{}", nonce));
+    let resp = client.get(&target).send().await.ok()?;
+    let status = resp.status().as_u16();
+    if status == 404 {
+        return None;
     }
+    let body = resp.bytes().await.ok()?;
+    Some(Wildcard {
+        status,
+        size: body.len() as u64,
+    })
 }
 
+fn parse_status_list(spec: &str, flag: &str) -> anyhow::Result<Vec<u16>> {
+    let list: Result<Vec<u16>, _> = spec.split(',').map(|p| p.trim().parse()).collect();
+    list.map_err(|_| {
+        anyhow::anyhow!(
+            "{} must be comma separated status codes, e.g. 200,301,403",
+            flag
+        )
+    })
+}
+
+/// Exclusions (wildcard match, --filter-status, --filter-size) apply first and
+/// unconditionally; --match-status is an allowlist on top.
+fn filter_shown<'a>(
+    found: &'a [Found],
+    allow: &Option<Vec<u16>>,
+    exclude: &[u16],
+    exclude_size: Option<u64>,
+) -> Vec<&'a Found> {
+    found
+        .iter()
+        .filter(|f| {
+            let wildcard_hit =
+                f.wc.is_some_and(|w| f.status == w.status && f.size == w.size);
+            !wildcard_hit
+                && !exclude.contains(&f.status)
+                && !exclude_size.is_some_and(|s| f.size == s)
+                && match allow {
+                    Some(list) => list.contains(&f.status),
+                    None => f.status != 404,
+                }
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn scan_base(
     base: &str,
     words: &Arc<Vec<String>>,
@@ -175,9 +231,10 @@ async fn scan_base(
     delay: Duration,
     with_title: bool,
     depth_limit: usize,
+    wc: Option<Wildcard>,
 ) -> (Vec<Found>, u64) {
     let mut tried = 0u64;
-    let (mut found, t) = probe(base, words, config, workers, delay, with_title).await;
+    let (mut found, t) = probe(base, words, config, workers, delay, with_title, wc).await;
     tried += t;
 
     let mut seen = HashSet::new();
@@ -193,7 +250,7 @@ async fn scan_base(
         depth += 1;
         let mut next = Vec::new();
         for d in &dirs {
-            let (mut more, t) = probe(d, words, config, workers, delay, with_title).await;
+            let (mut more, t) = probe(d, words, config, workers, delay, with_title, wc).await;
             tried += t;
             for f in &more {
                 if is_dir(f, &mut seen) {
@@ -219,6 +276,7 @@ async fn probe(
     workers: u32,
     delay: Duration,
     with_title: bool,
+    wc: Option<Wildcard>,
 ) -> (Vec<Found>, u64) {
     let next = Arc::new(AtomicUsize::new(0));
     let mut handles = Vec::new();
@@ -247,12 +305,25 @@ async fn probe(
                 let t0 = Instant::now();
                 if let Ok(resp) = client.get(&target).send().await {
                     let status = resp.status().as_u16();
-                    let size = resp.content_length().unwrap_or(0);
                     let ms = t0.elapsed().as_secs_f64() * 1000.0;
-                    let title = if with_title && (200..300).contains(&status) {
-                        read_title(resp).await
+                    // Chunked responses lack Content-Length, so read the body
+                    // once and derive size (and title on 2xx when requested).
+                    let want_body = resp.content_length().is_none()
+                        || (with_title && (200..300).contains(&status));
+                    let (size, title) = if want_body {
+                        match resp.bytes().await {
+                            Ok(b) => {
+                                let title = if with_title && (200..300).contains(&status) {
+                                    extract_title(&b)
+                                } else {
+                                    None
+                                };
+                                (b.len() as u64, title)
+                            }
+                            Err(_) => (0, None),
+                        }
                     } else {
-                        None
+                        (resp.content_length().unwrap_or(0), None)
                     };
                     found.push(Found {
                         url: target,
@@ -260,6 +331,7 @@ async fn probe(
                         size,
                         ms,
                         title,
+                        wc,
                     });
                 }
             }
@@ -275,11 +347,6 @@ async fn probe(
         }
     }
     (out, tried)
-}
-
-async fn read_title(resp: reqwest::Response) -> Option<String> {
-    let bytes = resp.bytes().await.ok()?;
-    extract_title(&bytes)
 }
 
 fn extract_title(bytes: &[u8]) -> Option<String> {
@@ -426,7 +493,7 @@ mod tests {
     #[test]
     fn filter_shown_drops_404() {
         let found: Vec<super::Found> = vec![found(200), found(404), found(301)];
-        let shown = super::filter_shown(&found, &None);
+        let shown = super::filter_shown(&found, &None, &[], None);
         let statuses: Vec<u16> = shown.iter().map(|f| f.status).collect();
         assert_eq!(statuses, vec![200, 301]);
     }
@@ -434,9 +501,62 @@ mod tests {
     #[test]
     fn filter_shown_match_status() {
         let found: Vec<super::Found> = vec![found(200), found(403)];
-        let shown = super::filter_shown(&found, &Some(vec![403]));
+        let shown = super::filter_shown(&found, &Some(vec![403]), &[], None);
         assert_eq!(shown.len(), 1);
         assert_eq!(shown[0].status, 403);
+    }
+
+    #[test]
+    fn filter_shown_hides_wildcard_match() {
+        let wc = Some(super::Wildcard {
+            status: 200,
+            size: 100,
+        });
+        let found = vec![found_with(200, 100, wc), found_with(200, 42, wc)];
+        let shown = super::filter_shown(&found, &None, &[], None);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].size, 42);
+    }
+
+    #[test]
+    fn filter_shown_keeps_same_status_different_size() {
+        let wc = Some(super::Wildcard {
+            status: 200,
+            size: 100,
+        });
+        let found = vec![found_with(200, 100, wc), found_with(200, 200, wc)];
+        let shown = super::filter_shown(&found, &None, &[], None);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].size, 200);
+    }
+
+    #[test]
+    fn filter_shown_exclude_status() {
+        let found = vec![found(200), found(403), found(500)];
+        let shown = super::filter_shown(&found, &None, &[403, 500], None);
+        let statuses: Vec<u16> = shown.iter().map(|f| f.status).collect();
+        assert_eq!(statuses, vec![200]);
+    }
+
+    #[test]
+    fn filter_shown_exclude_size() {
+        let found = vec![found_with(200, 1024, None), found_with(200, 2048, None)];
+        let shown = super::filter_shown(&found, &None, &[], Some(1024));
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].size, 2048);
+    }
+
+    #[test]
+    fn parse_status_list_ok() {
+        assert_eq!(
+            super::parse_status_list("403, 500", "--filter-status").unwrap(),
+            vec![403, 500]
+        );
+    }
+
+    #[test]
+    fn parse_status_list_bad() {
+        assert!(super::parse_status_list("4xx", "--filter-status").is_err());
     }
 
     #[test]
@@ -450,12 +570,17 @@ mod tests {
     }
 
     fn found(status: u16) -> super::Found {
+        found_with(status, 0, None)
+    }
+
+    fn found_with(status: u16, size: u64, wc: Option<super::Wildcard>) -> super::Found {
         super::Found {
             url: format!("http://x/{status}"),
             status,
-            size: 0,
+            size,
             ms: 0.0,
             title: None,
+            wc,
         }
     }
 
@@ -468,6 +593,7 @@ mod tests {
             size: 0,
             ms: 0.0,
             title: None,
+            wc: None,
         };
         assert!(is_dir(&f("http://x/a/"), &mut seen));
         assert!(!is_dir(&f("http://x/a/"), &mut seen));
