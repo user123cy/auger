@@ -7,12 +7,13 @@
 
 Load test, discover and inspect HTTP endpoints from the terminal.
 
-Four commands, one binary:
+Five commands, one binary:
 
 - `auger run` — hammer a URL with concurrent requests, get percentiles, a latency histogram and a flamegraph
 - `auger scan` — brute-force endpoints with a wordlist
 - `auger check` — inspect status, HTTP version and security headers with an A-F grade
 - `auger cert` — show the TLS certificate for a host
+- `auger ping` — measure per-phase latency (DNS/TCP/TLS/TTFB) of a single request
 
 ## install
 
@@ -49,7 +50,7 @@ auger run https://api.example.com/ -d 30s -s baseline.json
 auger run https://api.example.com/ -d 30s --compare baseline.json --threshold 1.2
 ```
 
-Any percentile slower than the baseline by more than the threshold flags a regression.
+Any percentile slower than the baseline by more than the threshold flags a regression. A regression sets the exit code to 1 — hook it into CI. `--json` prints the diff rows instead of the table.
 
 ## discover
 
@@ -63,7 +64,22 @@ auger scan https://example.com/ -w wordlist.txt --no-recursion # probe only the 
 auger scan https://example.com/ -w wordlist.txt --json        # machine-readable output
 cat urls.txt | auger scan -w wordlist.txt --stdin             # scan many bases from stdin
 cat urls.txt | auger scan -w wordlist.txt --stdin --silent    # print only "status url" lines
+auger scan https://example.com/ -w wordlist.txt --filter-status 403,500  # drop these statuses
+auger scan https://example.com/ -w wordlist.txt --filter-size 1234       # drop responses of this exact size
 ```
+
+Before scanning each base, auger probes a random path to learn what a catch-all response looks like (status + body size) and hides matching hits — so a SPA that answers 200 to every path won't flood the results. Filters (`--filter-status`, `--filter-size`) apply before `--match-status`.
+
+## latency
+
+```
+auger ping https://example.com/          # DNS, TCP, TLS, TTFB, total for one request
+auger ping example.com -c 3              # 3 attempts + min/avg/max per phase
+auger ping https://example.com/ --json   # machine-readable attempt object
+auger ping http://localhost:8080/api     # missing scheme defaults to http
+```
+
+Useful for spotting which phase of a connection is slow — a bad DNS resolver, a slow TLS handshake or a server that takes long to send headers.
 
 ## inspect
 
@@ -72,7 +88,7 @@ auger check https://example.com/
 auger check https://example.com/ --json
 ```
 
-Shows status, HTTP version, server and which security headers are present: HSTS, CSP, clickjacking, mime sniffing, referrer, permissions, COOP, CORP. The headers are weighted and scored into a letter grade (A-F) in the style of securityheaders.com. Missing headers show the exact header line to add.
+Shows status, HTTP version, server and which security headers are present: HSTS, CSP, clickjacking, mime sniffing, referrer, permissions, COOP, CORP. The headers are weighted and scored into a letter grade (A-F) in the style of securityheaders.com. Missing headers show the exact header line to add. Cookies are listed with their Secure/HttpOnly/SameSite flags.
 
 ## certificate
 
@@ -91,7 +107,7 @@ auger run https://api.example.com/ -d 10s -s report.json
 auger report report.json            # print it again later
 auger report report.json --markdown # as a markdown table
 auger html report.json -o r.html    # self-contained HTML with a chart
-auger compare before.json after.json
+auger compare before.json after.json   # exits 1 when the "after" report regresses
 ```
 
 ## example
