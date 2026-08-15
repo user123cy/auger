@@ -48,6 +48,12 @@ pub enum Commands {
     },
     /// Compare two saved reports
     Compare { before: String, after: String },
+    /// Generate shell completion scripts
+    Completions {
+        /// Shell to generate for: bash, zsh, fish, powershell, elvish
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(clap::Args)]
@@ -80,7 +86,9 @@ pub struct HttpOptions {
 
 #[derive(clap::Args)]
 pub struct RunArgs {
-    pub url: String,
+    /// URL(s) to load test — pass several to compare them in a battle matrix
+    #[arg(num_args = 1..)]
+    pub urls: Vec<String>,
 
     #[arg(short, long, default_value_t = 20)]
     pub concurrency: u32,
@@ -139,6 +147,30 @@ pub struct RunArgs {
     /// Suppress the per-second progress line
     #[arg(long)]
     pub quiet: bool,
+
+    /// Enable real-time TUI dashboard (requires 'tui' feature)
+    #[arg(long)]
+    pub tui: bool,
+
+    /// Status codes or classes counted as success, comma separated, e.g. 2xx,3xx,401
+    #[arg(long, default_value = "2xx,3xx")]
+    pub status_ok: String,
+
+    /// Discard the first seconds of the run from the statistics, e.g. 3s
+    #[arg(long)]
+    pub warmup: Option<String>,
+
+    /// Abort the run after this many errors
+    #[arg(long)]
+    pub max_errors: Option<u64>,
+
+    /// Print the report as a markdown table instead of the text report
+    #[arg(long)]
+    pub markdown: bool,
+
+    /// Post the result summary to a webhook (Discord or Slack) when the run finishes
+    #[arg(long)]
+    pub webhook: Option<String>,
 
     #[command(flatten)]
     pub http: HttpOptions,

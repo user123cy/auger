@@ -2,12 +2,14 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Report {
     pub url: String,
     pub concurrency: u32,
     pub elapsed_ms: u64,
     pub requests: u64,
+    #[serde(default)]
+    pub warmup_discarded: u64,
     pub errors: u64,
     pub bytes: u64,
     pub latencies_ms: Vec<f64>,
@@ -19,6 +21,8 @@ pub struct Report {
     pub errors_tls: u64,
     #[serde(default)]
     pub errors_other: u64,
+    #[serde(default)]
+    pub errors_status: u64,
     #[serde(default)]
     pub statuses: BTreeMap<u16, u64>,
     #[serde(default)]
@@ -50,6 +54,29 @@ pub struct Bucket {
 }
 
 impl Report {
+    #[cfg(feature = "tui")]
+    pub fn new(url: String) -> Self {
+        Self {
+            url,
+            concurrency: 0,
+            elapsed_ms: 0,
+            requests: 0,
+            warmup_discarded: 0,
+            errors: 0,
+            bytes: 0,
+            latencies_ms: Vec::new(),
+            errors_timeout: 0,
+            errors_connect: 0,
+            errors_tls: 0,
+            errors_other: 0,
+            errors_status: 0,
+            statuses: BTreeMap::new(),
+            ttfb_ms: Vec::new(),
+            slowest_ms: Vec::new(),
+            first_errors: Vec::new(),
+        }
+    }
+
     pub fn stats(&self) -> Stats {
         let mut sorted = self.latencies_ms.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -86,6 +113,40 @@ impl Report {
             histogram: histogram(&sorted, max),
         }
     }
+}
+
+// Index of the "fastest" report in a battle: lowest p50, ties broken by
+// req/s. Only reports with at least one request can win (a dead endpoint has
+// p50 == 0.0), and healthy reports (no errors) are preferred over erroring
+// ones — a 404 endpoint answering fast is not a winner.
+pub fn winner(reports: &[Report]) -> Option<usize> {
+    let usable: Vec<usize> = reports
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.requests > 0)
+        .map(|(i, _)| i)
+        .collect();
+    if usable.is_empty() {
+        return None;
+    }
+    let clean: Vec<usize> = usable
+        .iter()
+        .copied()
+        .filter(|&i| reports[i].errors == 0)
+        .collect();
+    let pool = if clean.is_empty() { &usable } else { &clean };
+    pool.iter().copied().min_by(|&i, &j| {
+        let a = reports[i].stats();
+        let b = reports[j].stats();
+        a.p50
+            .partial_cmp(&b.p50)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                b.rps
+                    .partial_cmp(&a.rps)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    })
 }
 
 // Buckets grow on a log scale so a few slow outliers don't drown the shape.
@@ -136,6 +197,7 @@ mod tests {
             concurrency: 1,
             elapsed_ms: 1000,
             requests: latencies.len() as u64,
+            warmup_discarded: 0,
             errors: 0,
             bytes: 0,
             latencies_ms: latencies,
@@ -145,6 +207,7 @@ mod tests {
             errors_connect: 0,
             errors_tls: 0,
             errors_other: 0,
+            errors_status: 0,
             slowest_ms: vec![],
             first_errors: vec![],
         }
@@ -191,6 +254,39 @@ mod tests {
         let total: u64 = s.histogram.iter().map(|b| b.count).sum();
         assert_eq!(total, 3);
         assert!(s.histogram.iter().all(|b| b.lo < b.hi));
+    }
+
+    #[test]
+    fn winner_picks_lowest_p50_then_higher_rps() {
+        let a = report(vec![5.0, 6.0]);
+        let b = report(vec![10.0, 11.0]);
+        assert_eq!(winner(&[a.clone(), b.clone()]), Some(0));
+        assert_eq!(winner(&[b, a.clone()]), Some(1));
+        // Same p50: higher req/s wins the tie.
+        let mut fast = report(vec![5.0, 6.0]);
+        fast.elapsed_ms = 500; // 2 samples in 0.5s -> 4 req/s vs 2 req/s
+        assert_eq!(winner(&[a, fast]), Some(1));
+    }
+
+    #[test]
+    fn dead_endpoint_never_wins() {
+        let dead = report(vec![]); // 0 requests -> p50 would be 0.0
+        let ok = report(vec![30.0, 40.0]);
+        assert_eq!(winner(&[dead.clone(), ok.clone()]), Some(1));
+        assert_eq!(winner(&[ok, dead.clone()]), Some(0));
+        assert_eq!(winner(&[dead.clone(), dead.clone()]), None);
+    }
+
+    #[test]
+    fn winner_prefers_healthy_over_erroring() {
+        let healthy = report(vec![50.0, 60.0]);
+        let mut erroring = report(vec![1.0, 2.0]); // faster, but erroring
+        erroring.errors = 10;
+        assert_eq!(winner(&[erroring.clone(), healthy.clone()]), Some(1));
+        // If every report errors, fall back to fastest anyway.
+        let mut other = report(vec![5.0, 6.0]);
+        other.errors = 2;
+        assert_eq!(winner(&[erroring, other]), Some(0));
     }
 
     #[test]

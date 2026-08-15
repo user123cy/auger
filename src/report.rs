@@ -2,7 +2,7 @@ use colored::Colorize;
 
 use crate::color::heat;
 use crate::fmt::{dec1, group, ms, whole};
-use crate::stats::{Report, Stats};
+use crate::stats::{Report, Stats, winner};
 
 pub fn print_markdown(report: &Report) {
     let stats = report.stats();
@@ -11,6 +11,9 @@ pub fn print_markdown(report: &Report) {
     println!("| metric | value |");
     println!("|---|---|");
     println!("| requests | {} |", group(report.requests));
+    if report.warmup_discarded > 0 {
+        println!("| warmup excluded | {} |", group(report.warmup_discarded));
+    }
     println!("| req/s | {} |", whole(stats.rps));
     println!("| errors | {} |", group(report.errors));
     println!(
@@ -24,6 +27,19 @@ pub fn print_markdown(report: &Report) {
     println!("| p95 | {} ms |", dec1(stats.p95));
     println!("| p99 | {} ms |", dec1(stats.p99));
     println!("| max | {} ms |", dec1(stats.max_ms));
+    if !report.ttfb_ms.is_empty() {
+        println!(
+            "| ttfb p50 | {} ms |",
+            dec1(ttfb_pct(&report.ttfb_ms, 0.50))
+        );
+        println!(
+            "| ttfb p95 | {} ms |",
+            dec1(ttfb_pct(&report.ttfb_ms, 0.95))
+        );
+    }
+    if report.errors_status > 0 {
+        println!("| bad status | {} |", group(report.errors_status));
+    }
 }
 
 pub fn print(report: &Report) {
@@ -36,19 +52,130 @@ pub fn print(report: &Report) {
     }
     print_ttfb(&report.ttfb_ms);
     print_slowest(&report.slowest_ms);
+    print_insights(report, &stats);
+}
+
+pub fn print_matrix(reports: &[Report]) {
+    let Some(first) = reports.first() else {
+        return;
+    };
+    println!();
+    println!(
+        "  {} {} URLs · {} workers · {}s",
+        "battle".bold().cyan(),
+        reports.len(),
+        first.concurrency,
+        dec1(first.elapsed_ms as f64 / 1000.0)
+    );
+    println!(
+        "  {:<46} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "url", "req/s", "p50", "p95", "p99", "errors"
+    );
+    let win = winner(reports);
+    for (i, r) in reports.iter().enumerate() {
+        let s = r.stats();
+        let row = format!(
+            "  {:<46} {:>8} {:>8} {:>8} {:>8} {:>8}",
+            r.url,
+            whole(s.rps),
+            ms(s.p50),
+            ms(s.p95),
+            ms(s.p99),
+            group(r.errors)
+        );
+        if Some(i) == win {
+            println!("{}", row.bold().green());
+        } else {
+            println!("{}", row);
+        }
+    }
+    if let Some(i) = win {
+        println!("\n  {} {}", "winner".bold().cyan(), reports[i].url);
+    }
+}
+
+pub fn print_markdown_matrix(reports: &[Report]) {
+    println!("| url | req/s | p50 | p95 | p99 | errors |");
+    println!("|---|---|---|---|---|---|");
+    for r in reports {
+        let s = r.stats();
+        println!(
+            "| {} | {} | {} ms | {} ms | {} ms | {} |",
+            r.url,
+            whole(s.rps),
+            dec1(s.p50),
+            dec1(s.p95),
+            dec1(s.p99),
+            group(r.errors)
+        );
+    }
+    if let Some(i) = winner(reports) {
+        println!();
+        println!("🥇 **{}** wins the battle", reports[i].url);
+    }
+}
+
+fn print_insights(report: &Report, stats: &Stats) {
+    if report.requests == 0 && report.errors == 0 {
+        return;
+    }
+    println!();
+    println!("  insights");
+    if stats.p50 > 0.0 {
+        let ratio = stats.p99 / stats.p50;
+        let line = if ratio >= 3.0 {
+            format!(
+                "p99 is {:.1}× p50 — tail latency (pooled connections? cold cache?)",
+                ratio
+            )
+            .yellow()
+        } else if ratio <= 1.6 {
+            format!("steady latency — p95 is {:.1}× p50", stats.p95 / stats.p50).green()
+        } else {
+            format!("moderate tail — p99 is {:.1}× p50", ratio).cyan()
+        };
+        println!("   {}{}", "• ".bold(), line);
+    }
+    if report.errors > 0 {
+        let total = report.requests + report.errors;
+        let pct = report.errors as f64 / total.max(1) as f64 * 100.0;
+        println!(
+            "   {}{:.1}% of requests failed ({} errors)",
+            "⚠ ".yellow().bold(),
+            pct,
+            group(report.errors)
+        );
+    }
+    let bad: u64 = report
+        .statuses
+        .iter()
+        .filter(|(c, _)| **c >= 400)
+        .map(|(_, v)| v)
+        .sum();
+    if bad > 0 && report.errors == 0 {
+        println!(
+            "   {}{:.0}% of responses are 4xx/5xx — check --status-ok",
+            "⚠ ".yellow().bold(),
+            bad as f64 / report.requests.max(1) as f64 * 100.0
+        );
+    }
 }
 
 fn print_summary(report: &Report, stats: &Stats) {
     let secs = report.elapsed_ms as f64 / 1000.0;
     println!();
     println!("  {} {}", "auger".bold().cyan(), report.url);
-    println!(
+    let mut head = format!(
         "  {} workers · {}s · {} req · {} req/s",
         report.concurrency,
         dec1(secs),
         group(report.requests),
         group(stats.rps.round() as u64)
     );
+    if report.warmup_discarded > 0 {
+        head.push_str(&format!(" · {} in warmup", group(report.warmup_discarded)));
+    }
+    println!("{}", head);
     let mut line = format!("  {} errors", group(report.errors));
     let e = report.errors_timeout;
     if e > 0 {
@@ -61,6 +188,10 @@ fn print_summary(report: &Report, stats: &Stats) {
     let e = report.errors_tls;
     if e > 0 {
         line.push_str(&format!(" · {} tls", group(e)));
+    }
+    let e = report.errors_status;
+    if e > 0 {
+        line.push_str(&format!(" · {} bad status", group(e)));
     }
     let e = report.errors_other;
     if e > 0 {
@@ -88,19 +219,25 @@ fn print_summary(report: &Report, stats: &Stats) {
     println!();
 }
 
+fn ttfb_pct(ttfb: &[f64], p: f64) -> f64 {
+    let mut s = ttfb.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    s[((s.len() - 1) as f64 * p).round() as usize]
+}
+
 fn print_ttfb(ttfb: &[f64]) {
     if ttfb.is_empty() {
         return;
     }
-    let mut s = ttfb.to_vec();
-    s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let pct = |p: f64| s[((s.len() - 1) as f64 * p).round() as usize];
     println!();
     println!(
-        "  ttfb (ms)  p50 {} · p95 {} · max {}",
-        ms(pct(0.50)),
-        ms(pct(0.95)),
-        ms(*s.last().unwrap())
+        "  ttfb (ms)  p50 {} · p75 {} · p90 {} · p95 {} · p99 {} · max {}",
+        ms(ttfb_pct(ttfb, 0.50)),
+        ms(ttfb_pct(ttfb, 0.75)),
+        ms(ttfb_pct(ttfb, 0.90)),
+        ms(ttfb_pct(ttfb, 0.95)),
+        ms(ttfb_pct(ttfb, 0.99)),
+        ms(ttfb.iter().fold(0.0f64, |m, &v| m.max(v)))
     );
 }
 

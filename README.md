@@ -41,6 +41,23 @@ auger run https://api.example.com/ --random-ua -H "X-Token: abc"
 auger run https://api.example.com/ -m POST --body '{"user":1}'   # inline request body
 auger run https://api.example.com/ -d 30s --quiet                # no progress line
 auger run https://api.example.com/ -d 30s --json                 # machine-readable output
+auger run https://api.example.com/ -d 30s --tui                  # live dashboard (requires --features tui)
+auger run https://api.example.com/ -d 30s --warmup 3s            # discard the first 3s from the stats
+auger run https://api.example.com/ -d 30s --max-errors 50        # stop early after 50 errors
+auger run https://api.example.com/ -d 30s --status-ok 2xx,3xx    # count other statuses as errors
+auger run https://a.example.com/ https://b.example.com/ -d 10s   # battle: compare & crown a winner
+auger run https://a.example.com/ https://b.example.com/ --markdown  # battle as a markdown table
+auger run https://api.example.com/ -d 10s --markdown             # report as markdown (paste in a PR)
+auger run https://api.example.com/ -d 10s --webhook https://discord.com/api/webhooks/...  # post a summary
+```
+
+`--status-ok` decides which responses count as success (exact codes like `401` or classes like `2xx`). Responses outside the list are counted as errors and set the exit code to 1, so a run against a server that answers 500 fails in CI. With `--warmup` the first seconds of the run are spent warming connections and are excluded from the statistics; the summary shows how many requests fell into the warmup window (`· 12 in warmup`) so the count reconciles with the live progress counter. `--max-errors` aborts the run as soon as that many errors accumulate.
+
+Pass several URLs to `run` to compare endpoints side by side: auger prints a comparison matrix and crowns a winner (fastest p50 among healthy endpoints — ones that answered requests without errors). The exit code is 1 when any endpoint reports errors. `--markdown` renders the report — or the battle matrix — as a table you can paste straight into a PR comment, and `--webhook` posts a one-line summary to a Discord (`content`) or Slack (`text`) webhook when the run finishes; a failing webhook only warns on stderr, it never fails the run. Every text report ends with an `insights` section that reads the numbers for you: tail-latency ratio (p99 vs p50), error rate and 4xx/5xx share.
+
+The `--tui` dashboard shows live req/s, latency percentiles, a histogram, a req/s sparkline, status codes and errors, with a progress bar. `p` pauses the run, `q`/`Esc` quits.
+```
+auger completions bash   # generate a bash completion script (also zsh, fish, powershell, elvish)
 ```
 
 Save a baseline and compare against it later:
@@ -132,6 +149,18 @@ auger compare before.json after.json   # exits 1 when the "after" report regress
    13–26   █████████  976
    26–52   ██████  621
    52–190  █████  530
+```
+
+## exit codes
+
+`auger run` exits 0 when the run finished without errors, 1 when any error occurred — including responses outside `--status-ok`, a `--max-errors` abort, or a regression against a saved baseline via `--compare`. `auger compare` also exits 1 on regression. That makes the commands safe to gate CI on.
+
+On Windows PowerShell use `$LASTEXITCODE` to read the exit code — `$?` is a boolean there and prints `False` for a non-zero exit:
+
+```
+PS> .\auger.exe run https://api.example.com/ -d 30s --status-ok 2xx
+PS> $LASTEXITCODE
+1
 ```
 
 ## why
