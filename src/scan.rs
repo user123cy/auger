@@ -30,9 +30,9 @@ struct Found {
 }
 
 pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
-    let words = expand(load_words(&args.wordlist)?, args.extensions.as_deref());
+    let words = load_words_source(args)?;
     if words.is_empty() {
-        anyhow::bail!("wordlist '{}' has no entries", args.wordlist);
+        anyhow::bail!("wordlist has no entries");
     }
 
     let config = ClientConfig::from_http(&args.http);
@@ -104,13 +104,25 @@ pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
     let shown = filter_shown(&found, &allow, &exclude, exclude_size);
 
     if let Some(out) = args.output.as_deref() {
-        let mut data = String::new();
-        for f in &shown {
-            data.push_str(&format!("{} {}\n", f.status, f.url));
-        }
-        std::fs::write(out, data)?;
-        if !json && !args.silent {
-            println!("  wrote {} paths to {}", shown.len(), out);
+        if json {
+            let data = serde_json::to_string_pretty(&serde_json::json!({
+                "tried": tried,
+                "found": shown.len(),
+                "paths": shown,
+            }))?;
+            std::fs::write(out, data)?;
+            if !args.silent {
+                eprintln!("  wrote JSON to {}", out);
+            }
+        } else {
+            let mut data = String::new();
+            for f in &shown {
+                data.push_str(&format!("{} {}\n", f.status, f.url));
+            }
+            std::fs::write(out, data)?;
+            if !args.silent {
+                println!("  wrote {} paths to {}", shown.len(), out);
+            }
         }
     }
 
@@ -154,19 +166,32 @@ pub async fn run(args: &ScanArgs, json: bool) -> anyhow::Result<()> {
 }
 
 fn read_stdin_urls() -> anyhow::Result<Vec<String>> {
-    let urls = read_urls(std::io::stdin().lock());
+    let urls = crate::cli::read_urls(std::io::stdin().lock());
     if urls.is_empty() {
         anyhow::bail!("no base URLs read from stdin");
     }
     Ok(urls)
 }
 
-fn read_urls<R: std::io::BufRead>(r: R) -> Vec<String> {
-    r.lines()
-        .map_while(Result::ok)
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect()
+/// `-w -` reads the wordlist from stdin; otherwise it is loaded from the file.
+fn load_words_source(args: &ScanArgs) -> anyhow::Result<Vec<String>> {
+    if args.wordlist == "-" {
+        if args.stdin {
+            anyhow::bail!(
+                "cannot read both the base URLs and the wordlist from stdin; \
+                 pass the URLs as arguments or use a wordlist file"
+            );
+        }
+        Ok(expand(
+            crate::cli::read_words(std::io::stdin().lock()),
+            args.extensions.as_deref(),
+        ))
+    } else {
+        Ok(expand(
+            load_words(&args.wordlist)?,
+            args.extensions.as_deref(),
+        ))
+    }
 }
 
 /// A catch-all response for a random path, used as a false-positive baseline.
@@ -563,10 +588,32 @@ mod tests {
     fn read_urls_trims_and_skips() {
         use std::io::Cursor;
         assert_eq!(
-            super::read_urls(Cursor::new(" https://a.com \n\nhttps://b.com\n")),
+            crate::cli::read_urls(Cursor::new(" https://a.com \n\nhttps://b.com\n")),
             vec!["https://a.com", "https://b.com"]
         );
-        assert!(super::read_urls(Cursor::new("\n \n")).is_empty());
+        assert!(crate::cli::read_urls(Cursor::new("\n \n")).is_empty());
+    }
+
+    #[test]
+    fn read_words_skips_comments() {
+        use std::io::Cursor;
+        assert_eq!(
+            crate::cli::read_words(Cursor::new("admin\n# comment\n  private  \n")),
+            vec!["admin", "private"]
+        );
+    }
+
+    #[test]
+    fn wordlist_dash_conflicts_with_stdin_urls() {
+        let s = parse_scan(&["auger", "scan", "-w", "-", "--stdin"]);
+        assert!(super::load_words_source(&s).is_err());
+    }
+
+    #[test]
+    fn wordlist_dash_needs_no_positional_url() {
+        // `-w -` alone is fine: URLs come from the positional argument.
+        let s = parse_scan(&["auger", "scan", "http://x", "-w", "-"]);
+        assert!(s.wordlist == "-");
     }
 
     fn found(status: u16) -> super::Found {

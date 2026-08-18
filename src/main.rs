@@ -28,7 +28,7 @@ fn main() -> anyhow::Result<()> {
 
 async fn run(cli: cli::Cli) -> anyhow::Result<()> {
     match cli.command {
-        cli::Commands::Run(args) => run_cmd(args, cli.json).await?,
+        cli::Commands::Run(args) => run_cmd(*args, cli.json).await?,
         cli::Commands::Scan(args) => scan::run(&args, cli.json).await?,
         cli::Commands::Check(args) => check::run(&args, cli.json).await?,
         cli::Commands::Cert(args) => cert::run(&args.target, cli.json).await?,
@@ -73,8 +73,10 @@ async fn run(cli: cli::Cli) -> anyhow::Result<()> {
 }
 
 async fn run_cmd(args: cli::RunArgs, json: bool) -> anyhow::Result<()> {
+    let urls = runner::load_urls(&args)?;
+
     // Battle mode: several URLs, one command, a winner.
-    if args.urls.len() > 1 {
+    if urls.len() > 1 {
         if args.tui {
             anyhow::bail!("--tui supports a single URL");
         }
@@ -83,7 +85,7 @@ async fn run_cmd(args: cli::RunArgs, json: bool) -> anyhow::Result<()> {
                 "--save and --compare need a single URL; save a baseline for each URL separately"
             );
         }
-        let reports = runner::run_many(&args.urls, &args, json || args.quiet).await?;
+        let reports = runner::run_many(&urls, &args, json || args.quiet).await?;
         if json {
             println!("{}", serde_json::to_string_pretty(&reports)?);
         } else if args.markdown {
@@ -100,7 +102,7 @@ async fn run_cmd(args: cli::RunArgs, json: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let url = args.urls[0].clone();
+    let url = urls[0].clone();
 
     #[cfg(feature = "tui")]
     if args.tui {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+
+### Added
+- `auger run --urls-file <file>` and `auger run --stdin` — load test or battle any number of endpoints from a list. URLs from the command line, the file and stdin are combined; one URL runs normally, several run a battle matrix. `auger run` no longer requires a positional URL when a list source is given.
+- `auger scan -w -` — read the wordlist from stdin, keeping the base URL positional: `printf 'admin\nprivate\n' | auger scan https://target -w -`. Comments (`#`) are skipped, like wordlist files.
+- `auger scan -o <file> --json` — the output file now gets the machine-readable JSON object (`tried`, `found`, `paths`) when `--json` is set, instead of the text `status url` lines.
+- `auger check` — the TLS line reports how many days the certificate is valid (`expires 2026-10-27 (70d)`) and prints a warning when it expires within 30 days or has already expired. JSON output gains `cert_days_left`.
+
 ## 0.4.0
 
 ### Added

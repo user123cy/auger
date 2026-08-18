@@ -61,6 +61,8 @@ const SECURITY: [(&str, &str, u8, &str); 8] = [
 struct CheckResult {
     url: String,
     tls: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cert_days_left: Option<i64>,
     status: u16,
     http_version: &'static str,
     server: String,
@@ -203,7 +205,8 @@ async fn check_url(client: &reqwest::Client, url: &str) -> Result<CheckResult, S
     let (score, headers) = security_rows(&final_headers);
     Ok(CheckResult {
         url: url.to_string(),
-        tls,
+        cert_days_left: tls.as_ref().map(|(_, d)| *d),
+        tls: tls.map(|(line, _)| line),
         status,
         http_version,
         server,
@@ -220,6 +223,21 @@ async fn check_url(client: &reqwest::Client, url: &str) -> Result<CheckResult, S
 fn print_result(r: &CheckResult) {
     if let Some(t) = &r.tls {
         println!("  tls     {}", t);
+    }
+    if let Some(days) = r.cert_days_left {
+        if days < 0 {
+            println!(
+                "  {}  certificate expired {} days ago",
+                "warning".red().bold(),
+                -days
+            );
+        } else if days < 30 {
+            println!(
+                "  {}  certificate expires in {} days",
+                "warning".yellow().bold(),
+                days
+            );
+        }
     }
     println!("  status  {}", status_str(r.status));
     println!("  http    {}", r.http_version);
@@ -294,13 +312,15 @@ fn grade(score: u8) -> char {
     }
 }
 
-async fn tls_info(url: &str) -> Option<String> {
+/// TLS summary line plus days until the certificate expires.
+async fn tls_info(url: &str) -> Option<(String, i64)> {
     let ep = crate::tls::parse_endpoint(url, crate::tls::Scheme::Https).ok()?;
     let r = crate::tls::connect_tls(&ep.host, ep.port).await.ok()?;
-    Some(format!(
-        "TLS {} · issuer {} · expires {}",
-        r.info.tls_version, r.info.issuer, r.info.not_after
-    ))
+    let line = format!(
+        "TLS {} · issuer {} · expires {} ({}d)",
+        r.info.tls_version, r.info.issuer, r.info.not_after, r.info.days_left
+    );
+    Some((line, r.info.days_left))
 }
 
 fn parse_cookie(raw: &str) -> CookieInfo {

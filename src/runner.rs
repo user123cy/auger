@@ -422,6 +422,24 @@ fn worker_params(
     }
 }
 
+/// Resolve the URL list for a run: positional URLs first, then the file,
+/// then stdin. One URL runs a plain load test; several run a battle.
+pub fn load_urls(args: &RunArgs) -> anyhow::Result<Vec<String>> {
+    let mut urls = args.urls.clone();
+    if let Some(path) = &args.urls_file {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("failed to read '{}'", path))?;
+        urls.extend(crate::cli::read_urls(text.as_bytes()));
+    }
+    if args.stdin {
+        urls.extend(crate::cli::read_urls(std::io::stdin().lock()));
+    }
+    if urls.is_empty() {
+        anyhow::bail!("no URLs to test — pass a URL, --urls-file, or --stdin");
+    }
+    Ok(urls)
+}
+
 pub async fn run(url: String, args: &RunArgs, quiet: bool) -> anyhow::Result<Report> {
     let o = opts(args)?;
 
@@ -652,6 +670,69 @@ mod tests {
     fn status_ok_tolerates_empty_parts() {
         assert!(StatusOk::parse("2xx,").is_ok());
         assert!(StatusOk::parse("200, 3xx").unwrap().contains(302));
+    }
+
+    use clap::Parser;
+
+    fn run_args(urls: &[&str]) -> RunArgs {
+        run_args_full(urls, &[])
+    }
+
+    fn run_args_full(urls: &[&str], extra: &[&str]) -> RunArgs {
+        let mut a: Vec<String> = vec!["auger".to_string(), "run".to_string()];
+        a.extend(urls.iter().map(|u| u.to_string()));
+        a.extend(extra.iter().map(|f| f.to_string()));
+        match crate::cli::Cli::try_parse_from(&a).unwrap().command {
+            crate::cli::Commands::Run(r) => *r,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn load_urls_positional() {
+        let args = run_args(&["http://a", "http://b"]);
+        assert_eq!(load_urls(&args).unwrap(), vec!["http://a", "http://b"]);
+    }
+
+    #[test]
+    fn load_urls_from_file() {
+        let path = std::env::temp_dir().join(format!("auger_urls_{}.txt", std::process::id()));
+        std::fs::write(&path, "http://a\n\nhttp://b\n").unwrap();
+        let flag = format!("--urls-file={}", path.to_string_lossy());
+        let args = run_args_full(&[], &[&flag]);
+        assert_eq!(load_urls(&args).unwrap(), vec!["http://a", "http://b"]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_urls_combines_all_sources() {
+        let path = std::env::temp_dir().join(format!("auger_urls2_{}.txt", std::process::id()));
+        std::fs::write(&path, "http://b").unwrap();
+        let flag = format!("--urls-file={}", path.to_string_lossy());
+        let args = run_args_full(&["http://a"], &[&flag]);
+        assert_eq!(load_urls(&args).unwrap(), vec!["http://a", "http://b"]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn run_requires_url_or_list_source() {
+        // No URL and no list source fails at parse time…
+        assert!(crate::cli::Cli::try_parse_from(["auger", "run"]).is_err());
+        assert!(crate::cli::Cli::try_parse_from(["auger", "run", "--urls-file", "x"]).is_ok());
+        assert!(crate::cli::Cli::try_parse_from(["auger", "run", "--stdin"]).is_ok());
+        // …but a missing list file still errors at runtime.
+        let args = run_args_full(&[], &["--urls-file=/nonexistent"]);
+        assert!(load_urls(&args).is_err());
+    }
+
+    #[test]
+    fn load_urls_empty_file_errors() {
+        let path = std::env::temp_dir().join(format!("auger_empty_{}.txt", std::process::id()));
+        std::fs::write(&path, "\n  \n").unwrap();
+        let flag = format!("--urls-file={}", path.to_string_lossy());
+        let args = run_args_full(&[], &[&flag]);
+        assert!(load_urls(&args).is_err());
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

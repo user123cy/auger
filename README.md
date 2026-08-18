@@ -47,13 +47,15 @@ auger run https://api.example.com/ -d 30s --max-errors 50        # stop early af
 auger run https://api.example.com/ -d 30s --status-ok 2xx,3xx    # count other statuses as errors
 auger run https://a.example.com/ https://b.example.com/ -d 10s   # battle: compare & crown a winner
 auger run https://a.example.com/ https://b.example.com/ --markdown  # battle as a markdown table
+auger run -d 10s --urls-file urls.txt                             # battle from a file, one URL per line
+cat urls.txt | auger run -d 10s --stdin                            # battle from stdin
 auger run https://api.example.com/ -d 10s --markdown             # report as markdown (paste in a PR)
 auger run https://api.example.com/ -d 10s --webhook https://discord.com/api/webhooks/...  # post a summary
 ```
 
 `--status-ok` decides which responses count as success (exact codes like `401` or classes like `2xx`). Responses outside the list are counted as errors and set the exit code to 1, so a run against a server that answers 500 fails in CI. With `--warmup` the first seconds of the run are spent warming connections and are excluded from the statistics; the summary shows how many requests fell into the warmup window (`· 12 in warmup`) so the count reconciles with the live progress counter. `--max-errors` aborts the run as soon as that many errors accumulate.
 
-Pass several URLs to `run` to compare endpoints side by side: auger prints a comparison matrix and crowns a winner (fastest p50 among healthy endpoints — ones that answered requests without errors). The exit code is 1 when any endpoint reports errors. `--markdown` renders the report — or the battle matrix — as a table you can paste straight into a PR comment, and `--webhook` posts a one-line summary to a Discord (`content`) or Slack (`text`) webhook when the run finishes; a failing webhook only warns on stderr, it never fails the run. Every text report ends with an `insights` section that reads the numbers for you: tail-latency ratio (p99 vs p50), error rate and 4xx/5xx share.
+Pass several URLs to `run` to compare endpoints side by side: auger prints a comparison matrix and crowns a winner (fastest p50 among healthy endpoints — ones that answered requests without errors). URL lists can come from a file or stdin instead of the command line — `--urls-file urls.txt` and `--stdin` combine with any positional URLs, so a single command can load test dozens of endpoints in one battle. The exit code is 1 when any endpoint reports errors. `--markdown` renders the report — or the battle matrix — as a table you can paste straight into a PR comment, and `--webhook` posts a one-line summary to a Discord (`content`) or Slack (`text`) webhook when the run finishes; a failing webhook only warns on stderr, it never fails the run. Every text report ends with an `insights` section that reads the numbers for you: tail-latency ratio (p99 vs p50), error rate and 4xx/5xx share.
 
 The `--tui` dashboard shows live req/s, latency percentiles, a histogram, a req/s sparkline, status codes and errors, with a progress bar. `p` pauses the run, `q`/`Esc` quits.
 ```
@@ -83,7 +85,10 @@ cat urls.txt | auger scan -w wordlist.txt --stdin             # scan many bases 
 cat urls.txt | auger scan -w wordlist.txt --stdin --silent    # print only "status url" lines
 auger scan https://example.com/ -w wordlist.txt --filter-status 403,500  # drop these statuses
 auger scan https://example.com/ -w wordlist.txt --filter-size 1234       # drop responses of this exact size
+cat words.txt | auger scan https://example.com/ -w - --json -o hits.json  # wordlist from stdin, JSON to a file
 ```
+
+`-w -` reads the wordlist from stdin (`cat words.txt | auger scan https://example.com/ -w -`). With `--json`, the `-o` file holds the machine-readable result (`tried`, `found`, `paths`) instead of `status url` lines, while stdout still gets the JSON.
 
 Before scanning each base, auger probes a random path to learn what a catch-all response looks like (status + body size) and hides matching hits — so a SPA that answers 200 to every path won't flood the results. Filters (`--filter-status`, `--filter-size`) apply before `--match-status`.
 
@@ -105,7 +110,7 @@ auger check https://example.com/
 auger check https://example.com/ --json
 ```
 
-Shows status, HTTP version, server and which security headers are present: HSTS, CSP, clickjacking, mime sniffing, referrer, permissions, COOP, CORP. The headers are weighted and scored into a letter grade (A-F) in the style of securityheaders.com. Missing headers show the exact header line to add. Cookies are listed with their Secure/HttpOnly/SameSite flags.
+Shows status, HTTP version, server and which security headers are present: HSTS, CSP, clickjacking, mime sniffing, referrer, permissions, COOP, CORP. The headers are weighted and scored into a letter grade (A-F) in the style of securityheaders.com. Missing headers show the exact header line to add. Cookies are listed with their Secure/HttpOnly/SameSite flags. For HTTPS sites the TLS line reports the certificate issuer, expiry date and days left, with a warning when it expires within 30 days or has already expired.
 
 ## certificate
 

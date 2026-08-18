@@ -21,7 +21,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Run a load test against a URL
-    Run(RunArgs),
+    Run(Box<RunArgs>),
     /// Probe a wordlist against a base URL to discover endpoints
     Scan(ScanArgs),
     /// Inspect a URL: status, HTTP version and security headers
@@ -87,8 +87,16 @@ pub struct HttpOptions {
 #[derive(clap::Args)]
 pub struct RunArgs {
     /// URL(s) to load test — pass several to compare them in a battle matrix
-    #[arg(num_args = 1..)]
+    #[arg(num_args = 1.., required_unless_present_any = ["stdin", "urls_file"])]
     pub urls: Vec<String>,
+
+    /// Read more URLs from this file, one per line
+    #[arg(long)]
+    pub urls_file: Option<String>,
+
+    /// Read more URLs from stdin, one per line
+    #[arg(long)]
+    pub stdin: bool,
 
     #[arg(short, long, default_value_t = 20)]
     pub concurrency: u32,
@@ -284,4 +292,22 @@ pub fn parse_duration(raw: &str) -> anyhow::Result<Duration> {
         _ => anyhow::bail!("unknown duration unit in '{}', use 5s, 2m or 1h", raw),
     };
     Ok(Duration::from_secs(secs))
+}
+
+/// Read one item per line, trimming whitespace and dropping blank lines.
+pub fn read_urls<R: std::io::BufRead>(r: R) -> Vec<String> {
+    read_lines(r, false)
+}
+
+/// Like `read_urls` but also drops `#` comment lines (used for wordlists).
+pub fn read_words<R: std::io::BufRead>(r: R) -> Vec<String> {
+    read_lines(r, true)
+}
+
+fn read_lines<R: std::io::BufRead>(r: R, skip_comments: bool) -> Vec<String> {
+    r.lines()
+        .map_while(Result::ok)
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty() && !(skip_comments && l.starts_with('#')))
+        .collect()
 }
