@@ -7,13 +7,20 @@
 
 Load test, discover and inspect HTTP endpoints from the terminal.
 
-Five commands, one binary:
+Twelve commands, one binary:
 
 - `auger run` — hammer a URL with concurrent requests, get percentiles, a latency histogram and a flamegraph
 - `auger scan` — brute-force endpoints with a wordlist
 - `auger check` — inspect status, HTTP version and security headers with an A-F grade
 - `auger cert` — show the TLS certificate for a host
 - `auger ping` — measure per-phase latency (DNS/TCP/TLS/TTFB) of a single request
+- `auger tech` — detect technologies, frameworks and CMS from headers and HTML
+- `auger cors` — test CORS misconfigurations and cross-origin vulnerabilities
+- `auger dns` — enumerate DNS records, check security, and discover subdomains
+- `auger fuzz` — fuzz HTTP endpoints with path traversal, XSS, SSRF and more
+- `auger chaos` — chaos engineering: inject failures and measure resilience score
+- `auger fingerprint` — behavioral fingerprinting: create unique server signature
+- `auger story` — generate human-readable narrative from load test reports
 
 ## install
 
@@ -121,6 +128,83 @@ auger cert https://example.com/ --json
 ```
 
 Shows the subject, issuer, TLS version, key size, signature algorithm, chain length, validity dates, days left and SANs. Exits non-zero when the certificate is expired and warns on stderr when it expires within 30 days.
+
+## tech detection
+
+```
+auger tech https://example.com/                # detect frameworks, CMS, servers
+auger tech https://example.com/ --json         # machine-readable output
+auger tech https://example.com/ -f urls.txt    # scan multiple URLs from a file
+```
+
+Identifies technologies from HTTP headers, cookies, meta tags and HTML patterns. Detects web servers (Nginx, Apache, IIS), frameworks (React, Vue, Angular, Next.js, Rails, Laravel), CMS (WordPress, Drupal, Joomla), CDNs (Cloudflare, Fastly), hosting providers (Vercel, Netlify), analytics, and more. WordPress detection includes plugin enumeration. Each technology includes a confidence level (certain/likely/possible).
+
+## CORS testing
+
+```
+auger cors https://example.com/api             # test for CORS misconfigurations
+auger cors https://a.com https://b.com          # test multiple URLs
+auger cors https://example.com/ --json          # machine-readable output
+```
+
+Probes how the server responds to various Origin headers (evil.com, null, subdomains, encoded bypasses). Reports risk levels (critical/high/medium/low) for misconfigurations that could allow cross-origin data theft. Exits 1 when a vulnerability is found — hook it into security CI.
+
+## DNS enumeration
+
+```
+auger dns example.com                          # A records
+auger dns example.com --all                     # all record types (A, MX, TXT, NS, SOA...)
+auger dns example.com -t MX,TXT,NS              # specific record types
+auger dns example.com --subdomains              # quick subdomain check (80 common names)
+auger dns example.com --wordlist subs.txt       # subdomain brute-force from file
+auger dns example.com --json                    # machine-readable output
+```
+
+Queries DNS-over-HTTPS (Google) for record enumeration. Checks security issues: weak SPF records (+all, ~all), missing DMARC, missing MX. Subdomain enumeration resolves common prefixes (www, mail, api, admin, etc.) or a custom wordlist.
+
+## fuzzing
+
+```
+auger fuzz https://example.com/                            # built-in payloads (path traversal, XSS, SQLi...)
+auger fuzz https://example.com/ --wordlist payloads.txt    # custom payload list
+auger fuzz https://example.com/ --builtin                   # explicit built-in payloads
+auger fuzz https://example.com/ -i query                    # inject into query string
+auger fuzz https://example.com/ -i body -m POST --body '{"user":"FUZZ"}'  # inject into body
+auger fuzz https://example.com/ -i subdomain                # test subdomains
+auger fuzz https://example.com/ -i wordlist                 # replace entire path
+auger fuzz https://example.com/ --max-payloads 100          # limit number of payloads
+auger fuzz https://example.com/ --json                      # machine-readable output
+```
+
+Fuzzes HTTP endpoints with configurable injection points. Built-in payloads cover path traversal (../../../etc/passwd), XSS, SQL injection, SSRF (169.254.169.254), open redirects, CRLF injection, Log4j, NoSQL injection, and sensitive path discovery (.env, .git, actuator, phpinfo). Reports interesting responses (2xx on sensitive paths, 3xx redirects, 5xx errors). Exits 1 when interesting responses are found.
+
+## chaos engineering
+
+```
+auger chaos https://api.example.com/           # 5 rounds per phase, measure resilience
+auger chaos https://api.example.com/ -r 100    # 100 rounds per phase
+auger chaos https://api.example.com/ --json    # machine-readable output
+```
+
+Runs 5 phases of chaos against the server: normal baseline, delayed requests (slow clients), malformed requests (bad HTTP), partial requests (dropped connections), and oversized requests (1MB body). Scores resilience from 0-100 based on how well the server handles each scenario. Reports issues like "server crashes on malformed input" or "doesn't handle disconnects". Grade A-F. Exit code 1 when score < 60.
+
+## fingerprinting
+
+```
+auger fingerprint https://example.com/         # analyze server behavior
+auger fingerprint https://example.com/ --json  # machine-readable output
+```
+
+Creates a unique behavioral fingerprint of an HTTP server by analyzing: header ordering, response timing patterns, error behavior, method support, and security posture. Detects anomalies like "error responses are 10x slower" (heavy logging), "TRACE method enabled" (XST vulnerability), or "X-Forwarded-For reflected" (proxy detected). Generates a deterministic fingerprint hash that changes when the server's behavior changes — useful for detecting infrastructure changes or drift.
+
+## narrative reports
+
+```
+auger story report.json                        # generate narrative from a load test
+auger story report.json --json                 # machine-readable output
+```
+
+Tells the story of what happened during a load test in plain English. Like: "At 0:15, errors begin to appear — 42 out of 10,000 requests failed. The first error was 'connection reset'. The server returned 503 for 23% of requests..." Ends with a summary, key findings, and actionable recommendations. Perfect for sharing results with non-technical stakeholders.
 
 ## reports
 

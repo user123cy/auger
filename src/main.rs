@@ -1,16 +1,23 @@
 mod cert;
+mod chaos;
 mod check;
 mod cli;
 mod client;
 mod color;
 mod compare;
+mod cors;
+mod dns;
 mod fmt;
+mod fingerprint;
+mod fuzz;
 mod html;
 mod ping;
 mod report;
 mod runner;
 mod scan;
 mod stats;
+mod story;
+mod tech;
 mod tls;
 
 #[cfg(feature = "tui")]
@@ -68,6 +75,13 @@ async fn run(cli: cli::Cli) -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
+        cli::Commands::Tech(args) => tech::run(&args, cli.json).await?,
+        cli::Commands::Cors(args) => cors::run(&args, cli.json).await?,
+        cli::Commands::Dns(args) => dns::run(&args, cli.json).await?,
+        cli::Commands::Fuzz(args) => fuzz::run(&args, cli.json).await?,
+        cli::Commands::Chaos(args) => chaos::run(&args, cli.json).await?,
+        cli::Commands::Fingerprint(args) => fingerprint::run(&args, cli.json).await?,
+        cli::Commands::Story(args) => story::run(&args, cli.json).await?,
     }
     Ok(())
 }

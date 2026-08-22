@@ -1,6 +1,6 @@
 [package]
 name = "auger"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 description = "Load test, discover and inspect HTTP endpoints from the terminal"
 license = "MIT"
@@ -24,6 +24,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "logg
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
+urlencoding = "2"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
 webpki-roots = "0.26"
 x509-parser = "0.17"

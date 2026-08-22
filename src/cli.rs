@@ -48,6 +48,20 @@ pub enum Commands {
     },
     /// Compare two saved reports
     Compare { before: String, after: String },
+    /// Detect technologies, frameworks and CMS from a URL
+    Tech(CheckArgs),
+    /// Test CORS misconfigurations on a URL
+    Cors(CorsArgs),
+    /// Enumerate DNS records and check security
+    Dns(DnsArgs),
+    /// Fuzz HTTP endpoints with payload injection
+    Fuzz(FuzzArgs),
+    /// Chaos engineering: inject failures and measure server resilience
+    Chaos(ChaosArgs),
+    /// Behavioral fingerprinting: create unique server signature
+    Fingerprint(FingerprintArgs),
+    /// Generate narrative story from a saved load test report
+    Story(StoryArgs),
     /// Generate shell completion scripts
     Completions {
         /// Shell to generate for: bash, zsh, fish, powershell, elvish
@@ -276,6 +290,118 @@ pub struct PingArgs {
 
     #[command(flatten)]
     pub http: HttpOptions,
+}
+
+#[derive(clap::Args)]
+pub struct CorsArgs {
+    /// URL(s) to test for CORS misconfigurations
+    #[arg(num_args = 1..)]
+    pub urls: Vec<String>,
+
+    #[command(flatten)]
+    pub http: HttpOptions,
+}
+
+#[derive(clap::Args)]
+pub struct DnsArgs {
+    /// Domain or URL to query
+    pub domain: String,
+
+    /// Record types to query, e.g. A,MX,TXT
+    #[arg(short, long, default_value = "A")]
+    pub types: Vec<String>,
+
+    /// Query all common record types
+    #[arg(long)]
+    pub all: bool,
+
+    /// Try subdomain enumeration
+    #[arg(long)]
+    pub subdomains: bool,
+
+    /// Wordlist for subdomain enumeration
+    #[arg(long)]
+    pub wordlist: Option<String>,
+
+    /// Concurrency for subdomain enumeration
+    #[arg(short, long, default_value_t = 10)]
+    pub concurrency: u32,
+
+    /// Show verbose output including empty results
+    #[arg(long)]
+    pub verbose: bool,
+}
+
+#[derive(clap::Args)]
+pub struct FuzzArgs {
+    /// Target URL (use FUZZ as placeholder)
+    pub url: String,
+
+    /// Wordlist file with payloads
+    #[arg(short, long)]
+    pub wordlist: Option<String>,
+
+    /// Use built-in payloads (path traversal, XSS, SQLi, etc.)
+    #[arg(long)]
+    pub builtin: bool,
+
+    /// Injection point: path, query, body, header, subdomain, wordlist
+    #[arg(short = 'i', long, default_value = "path")]
+    pub injection: String,
+
+    /// HTTP method
+    #[arg(short, long, default_value = "GET")]
+    pub method: String,
+
+    /// Request body (use FUZZ as placeholder)
+    #[arg(long)]
+    pub body: Option<String>,
+
+    #[arg(short, long, default_value_t = 20)]
+    pub concurrency: u32,
+
+    /// Maximum number of payloads to test
+    #[arg(long)]
+    pub max_payloads: Option<u64>,
+
+    /// Only report these status codes, comma separated
+    #[arg(long)]
+    pub filter_status: Option<String>,
+
+    #[command(flatten)]
+    pub http: HttpOptions,
+}
+
+#[derive(clap::Args)]
+pub struct ChaosArgs {
+    /// Target URL to chaos-test
+    pub url: String,
+
+    /// Number of rounds per phase
+    #[arg(short, long, default_value_t = 50)]
+    pub rounds: u32,
+
+    /// Delay in ms between phases
+    #[arg(long, default_value_t = 1000)]
+    pub delay_ms: u64,
+
+    #[command(flatten)]
+    pub http: HttpOptions,
+}
+
+#[derive(clap::Args)]
+pub struct FingerprintArgs {
+    /// URL to fingerprint
+    pub url: String,
+
+    #[command(flatten)]
+    pub http: HttpOptions,
+}
+
+#[derive(clap::Args)]
+pub struct StoryArgs {
+    /// Path to a saved report JSON file
+    pub report: String,
 }
 
 pub fn parse_duration(raw: &str) -> anyhow::Result<Duration> {
